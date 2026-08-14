@@ -1,0 +1,1437 @@
+<title>Inside BM25</title>
+
+<style>
+  /* ---------- tokens: light is the base, both dark states redefine ---------- */
+  :root {
+    --paper:      #EDF1F0;
+    --surface:    #F7F9F8;
+    --sunken:     #E2E8E7;
+    --ink:        #16232B;
+    --ink-soft:   #3D4E57;
+    --muted:      #64757C;
+    --rule:       #CBD5D3;
+    --rule-soft:  #DDE4E2;
+    --accent:     #D6246E;
+    --accent-dim: #F5D5E2;
+    --teal:       #0E7C86;
+    --teal-dim:   #CFE4E5;
+    --amber:      #A66A00;
+    --grid:       #D5DEDC;
+    --shadow:     0 1px 2px rgba(22, 35, 43, .06), 0 8px 24px -12px rgba(22, 35, 43, .18);
+
+    --display: "Helvetica Neue", Helvetica, "Segoe UI", Arial, sans-serif;
+    --body:    Charter, "Bitstream Charter", "Iowan Old Style", Georgia, serif;
+    --mono:    ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+
+    --measure: 68ch;
+    --wide:    min(1120px, 94vw);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0E1519;
+      --surface:    #161F24;
+      --sunken:     #1C272D;
+      --ink:        #DEE7E6;
+      --ink-soft:   #B3C1C1;
+      --muted:      #8598A0;
+      --rule:       #2C3A41;
+      --rule-soft:  #222E34;
+      --accent:     #FF5C93;
+      --accent-dim: #46202F;
+      --teal:       #3FC2C9;
+      --teal-dim:   #163338;
+      --amber:      #E0A33C;
+      --grid:       #26333A;
+      --shadow:     0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .7);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #0E1519;
+    --surface:    #161F24;
+    --sunken:     #1C272D;
+    --ink:        #DEE7E6;
+    --ink-soft:   #B3C1C1;
+    --muted:      #8598A0;
+    --rule:       #2C3A41;
+    --rule-soft:  #222E34;
+    --accent:     #FF5C93;
+    --accent-dim: #46202F;
+    --teal:       #3FC2C9;
+    --teal-dim:   #163338;
+    --amber:      #E0A33C;
+    --grid:       #26333A;
+    --shadow:     0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .7);
+  }
+
+  /* ---------- base ---------- */
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 17px;
+    line-height: 1.62;
+    margin: 0;
+    padding: 0 0 8rem;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .col {
+    width: var(--measure);
+    max-width: 92vw;
+    margin-inline: auto;
+  }
+
+  .bleed {
+    width: var(--wide);
+    margin-inline: auto;
+  }
+
+  p { margin: 0 0 1.1em; }
+  p + p { margin-top: -.15em; }
+
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  h1, h2, h3 {
+    font-family: var(--display);
+    font-weight: 700;
+    letter-spacing: -0.022em;
+    text-wrap: balance;
+    line-height: 1.12;
+  }
+
+  code, .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: .72rem;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 .6rem;
+  }
+
+  /* ---------- masthead ---------- */
+  header.masthead {
+    border-bottom: 1px solid var(--rule);
+    padding: 5.5rem 0 3rem;
+    margin-bottom: 3.5rem;
+  }
+
+  h1 {
+    font-size: clamp(2.6rem, 7vw, 4.4rem);
+    margin: 0 0 1.2rem;
+  }
+
+  .standfirst {
+    font-size: 1.2rem;
+    color: var(--ink-soft);
+    margin-bottom: 2rem;
+  }
+
+  .masthead-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.6rem 2.4rem;
+    padding-top: 1.6rem;
+    border-top: 1px solid var(--rule-soft);
+    font-family: var(--mono);
+    font-size: .8rem;
+  }
+
+  .masthead-meta div { display: flex; flex-direction: column; gap: .25rem; }
+  .masthead-meta dt { color: var(--muted); text-transform: uppercase; letter-spacing: .1em; font-size: .68rem; }
+  .masthead-meta dd { margin: 0; font-size: 1.15rem; font-weight: 500; }
+
+  /* ---------- sections ---------- */
+  section { margin-bottom: 4.5rem; }
+
+  h2 {
+    font-size: clamp(1.7rem, 3.4vw, 2.3rem);
+    margin: 0 0 1rem;
+  }
+
+  h3 {
+    font-size: 1.12rem;
+    letter-spacing: -.01em;
+    margin: 2.4rem 0 .7rem;
+  }
+
+  .lede { font-size: 1.08rem; color: var(--ink-soft); }
+
+  /* ---------- figures ---------- */
+  figure {
+    margin: 2.5rem auto;
+    background: var(--surface);
+    border: 1px solid var(--rule-soft);
+    border-radius: 3px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  .fig-head {
+    display: flex;
+    align-items: baseline;
+    gap: .8rem;
+    padding: 1rem 1.4rem .9rem;
+    border-bottom: 1px solid var(--rule-soft);
+    background: var(--sunken);
+  }
+
+  .fig-num {
+    font-family: var(--mono);
+    font-size: .7rem;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    white-space: nowrap;
+    padding-top: .18rem;
+  }
+
+  .fig-title {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: .95rem;
+    letter-spacing: -.01em;
+    margin: 0;
+  }
+
+  .fig-body { padding: 1.5rem 1.4rem; overflow-x: auto; }
+
+  figcaption {
+    padding: 0 1.4rem 1.3rem;
+    font-size: .88rem;
+    color: var(--muted);
+    line-height: 1.55;
+  }
+
+  figcaption strong { color: var(--ink-soft); font-weight: 600; }
+
+  /* ---------- controls ---------- */
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.6rem;
+    align-items: center;
+    padding: 0 1.4rem 1.3rem;
+  }
+
+  .ctrl { display: flex; align-items: center; gap: .7rem; font-family: var(--mono); font-size: .78rem; }
+  .ctrl label { color: var(--muted); letter-spacing: .06em; }
+  .ctrl output { color: var(--accent); font-weight: 600; min-width: 3.2em; }
+
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 150px;
+    height: 3px;
+    background: var(--rule);
+    border-radius: 2px;
+    cursor: pointer;
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 15px; height: 15px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--surface);
+    cursor: grab;
+  }
+
+  input[type="range"]::-moz-range-thumb {
+    width: 13px; height: 13px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--surface);
+    cursor: grab;
+  }
+
+  /* ---------- svg chart classes ---------- */
+  svg { display: block; max-width: 100%; height: auto; }
+  .grid-line { stroke: var(--grid); stroke-width: 1; }
+  .axis-line { stroke: var(--rule); stroke-width: 1.5; }
+  .tick-text { fill: var(--muted); font-family: var(--mono); font-size: 11px; }
+  .axis-label { fill: var(--ink-soft); font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+  .series-main { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+  .series-alt { fill: none; stroke: var(--teal); stroke-width: 2; stroke-dasharray: 5 4; }
+  .series-ghost { fill: none; stroke: var(--muted); stroke-width: 1.25; stroke-dasharray: 2 3; opacity: .8; }
+  .bar-main { fill: var(--accent); }
+  .bar-alt { fill: var(--teal); }
+  .bar-dim { fill: var(--rule); }
+  .bar-label { fill: var(--ink-soft); font-family: var(--mono); font-size: 11px; }
+  .val-label { fill: var(--ink); font-family: var(--mono); font-size: 11px; font-weight: 600; }
+  .dot-main { fill: var(--accent); }
+  .note-text { fill: var(--muted); font-family: var(--mono); font-size: 10.5px; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 1.2rem; padding: 0 1.4rem 1rem; font-family: var(--mono); font-size: .74rem; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: .45rem; }
+  .swatch { width: 15px; height: 3px; border-radius: 2px; display: inline-block; }
+  .swatch.solid-accent { background: var(--accent); }
+  .swatch.solid-teal { background: var(--teal); }
+  .swatch.dim { background: var(--rule); }
+  .swatch.dash-teal { background: repeating-linear-gradient(90deg, var(--teal) 0 5px, transparent 5px 9px); }
+  .swatch.ghost { background: repeating-linear-gradient(90deg, var(--muted) 0 2px, transparent 2px 5px); }
+
+  /* ---------- formula ---------- */
+  .formula {
+    background: var(--sunken);
+    border-left: 2px solid var(--accent);
+    padding: 1.2rem 1.4rem;
+    margin: 1.8rem 0;
+    font-family: var(--mono);
+    font-size: .92rem;
+    line-height: 1.9;
+    overflow-x: auto;
+  }
+
+  .formula .t-idf   { color: var(--accent); }
+  .formula .t-tf    { color: var(--teal); }
+  .formula .t-len   { color: var(--amber); }
+  .formula .anno    { color: var(--muted); font-size: .82em; }
+
+  .keyline { color: var(--muted); font-family: var(--mono); font-size: .78rem; }
+
+  /* ---------- tables ---------- */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: .82rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  th {
+    text-align: left;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    font-size: .68rem;
+    padding: 0 .9rem .6rem 0;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+
+  td {
+    padding: .5rem .9rem .5rem 0;
+    border-bottom: 1px solid var(--rule-soft);
+    vertical-align: baseline;
+  }
+
+  td.n, th.n { text-align: right; }
+  tr.hi td { background: var(--accent-dim); }
+  .tag { color: var(--accent); }
+
+  /* ---------- token pipeline ---------- */
+  .pipe { display: flex; flex-direction: column; gap: .9rem; }
+
+  .pipe-row { display: flex; gap: .9rem; align-items: flex-start; }
+
+  .pipe-step {
+    font-family: var(--mono);
+    font-size: .64rem;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    width: 8.5rem;
+    flex-shrink: 0;
+    padding-top: .45rem;
+  }
+
+  .pipe-val { font-family: var(--mono); font-size: .82rem; line-height: 1.9; word-break: break-word; }
+
+  .chip {
+    display: inline-block;
+    background: var(--sunken);
+    border: 1px solid var(--rule-soft);
+    border-radius: 2px;
+    padding: .14rem .45rem;
+    margin: 0 .28rem .28rem 0;
+    font-size: .78rem;
+  }
+
+  .chip.keep { border-color: var(--accent); color: var(--accent); }
+  .chip.drop { opacity: .45; text-decoration: line-through; }
+  .chip.addr { border-color: var(--teal); color: var(--teal); }
+
+  /* ---------- field-weight diagram ---------- */
+  .fields { display: grid; gap: .6rem; }
+
+  .field-row {
+    display: grid;
+    grid-template-columns: 5.5rem 3.2rem 1fr;
+    gap: .9rem;
+    align-items: center;
+    font-family: var(--mono);
+    font-size: .8rem;
+  }
+
+  .field-name { color: var(--ink-soft); }
+  .field-w { color: var(--accent); font-weight: 600; }
+  .field-bar { height: 22px; background: var(--accent); border-radius: 2px; opacity: .85; display: flex; align-items: center; padding-left: .5rem; color: var(--paper); font-size: .7rem; }
+
+  /* ---------- callout ---------- */
+  .callout {
+    border: 1px solid var(--rule);
+    border-left: 2px solid var(--teal);
+    background: var(--surface);
+    padding: 1.1rem 1.3rem;
+    margin: 2rem 0;
+    font-size: .95rem;
+  }
+
+  .callout .eyebrow { color: var(--teal); margin-bottom: .4rem; }
+  .callout p:last-child { margin-bottom: 0; }
+
+  /* ---------- steps ---------- */
+  ol.steps { counter-reset: s; list-style: none; padding: 0; margin: 1.5rem 0; display: flex; flex-direction: column; gap: 1.4rem; }
+  ol.steps li { counter-increment: s; display: grid; grid-template-columns: 2rem 1fr; gap: 1rem; }
+  ol.steps li::before {
+    content: counter(s);
+    font-family: var(--mono);
+    font-size: .78rem;
+    color: var(--accent);
+    border-top: 1px solid var(--accent);
+    padding-top: .3rem;
+  }
+  ol.steps .step-body { font-size: .96rem; }
+  ol.steps .calc { font-family: var(--mono); font-size: .82rem; color: var(--ink-soft); background: var(--sunken); padding: .5rem .7rem; border-radius: 2px; margin-top: .5rem; overflow-x: auto; }
+
+  ul.plain { list-style: none; padding: 0; margin: 1.2rem 0; display: flex; flex-direction: column; gap: .7rem; }
+  ul.plain li { display: grid; grid-template-columns: 1.1rem 1fr; gap: .7rem; font-size: .97rem; }
+  ul.plain li::before { content: "—"; color: var(--accent); font-family: var(--mono); }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 1.6rem;
+    margin-top: 4rem;
+    font-family: var(--mono);
+    font-size: .76rem;
+    color: var(--muted);
+    line-height: 1.8;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+
+  @media (max-width: 640px) {
+    body { font-size: 16px; }
+    .pipe-row { flex-direction: column; gap: .2rem; }
+    .pipe-step { width: auto; padding-top: 0; }
+    .field-row { grid-template-columns: 4.5rem 2.4rem 1fr; }
+    .masthead-meta { gap: 1.1rem 1.6rem; }
+  }
+</style>
+
+<header class="masthead">
+  <div class="col">
+    <p class="eyebrow">Ranking · src/lib/search</p>
+    <h1>Inside BM25</h1>
+    <p class="standfirst">
+      Every search box has to answer one question: of the documents that contain your
+      words, which one did you actually mean? BM25 answers it with three ideas and a
+      little arithmetic. This walks through all of it — using the real index built over
+      the 547 emails in <code>data/emails.json</code>.
+    </p>
+    <dl class="masthead-meta">
+      <div><dt>Documents</dt><dd class="num">547</dd></div>
+      <div><dt>Distinct terms</dt><dd class="num">4,668</dd></div>
+      <div><dt>Avg body length</dt><dd class="num">52.7</dd></div>
+      <div><dt>Fields</dt><dd class="num">4</dd></div>
+      <div><dt>Dependencies</dt><dd class="num">0</dd></div>
+    </dl>
+  </div>
+</header>
+
+<main>
+
+<section class="col">
+  <h2>The shape of the problem</h2>
+  <p>
+    Search for <em>mortgage pre-approval</em> and 28 of our emails contain the word
+    "mortgage". Returning all 28 in the order they happen to sit on disk is not search;
+    it is a filter. Search means <em>ordering</em> — and to order, you need a number per
+    document that says how well it answers the query.
+  </p>
+  <p>
+    BM25 produces that number. The full formula looks like this, and if it means nothing
+    to you yet, that's the point — we'll build it from scratch, one idea at a time, and
+    come back to it.
+  </p>
+
+  <div class="formula">
+    score(<em>d</em>) = Σ<sub>t ∈ query</sub>&nbsp;
+    <span class="t-idf">idf(t)</span> ·
+    <span class="t-tf">tf̃(t,d) · (k₁ + 1) / (tf̃(t,d) + k₁)</span><br>
+    <span class="anno">where&nbsp; tf̃(t,d) = Σ<sub>f ∈ fields</sub> w<sub>f</sub> · tf(t, d.f)
+    / <span class="t-len">(1 − b + b · len(d.f) / avgdl<sub>f</sub>)</span></span>
+  </div>
+
+  <p>
+    Three colours, three ideas.
+    <span style="color:var(--accent)"><strong>How rare is this word?</strong></span>
+    <span style="color:var(--teal)"><strong>How often does it appear here?</strong></span>
+    <span style="color:var(--amber)"><strong>How long is this document?</strong></span>
+    Everything else is scaffolding.
+  </p>
+</section>
+
+<section class="col">
+  <h2>Step zero: text becomes terms</h2>
+  <p>
+    Before any scoring happens, both the documents and the query have to be cut into
+    comparable pieces. This is the tokenizer, and it is the single most consequential
+    piece of a search engine — a term that the tokenizer discards can never be searched
+    for, no matter how good the ranking maths is.
+  </p>
+  <p>
+    Ours does four things, plus one rule specific to email.
+  </p>
+</section>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 1</span>
+    <p class="fig-title">The tokenizer, run on a real subject line</p>
+  </div>
+  <div class="fig-body">
+    <div class="pipe">
+      <div class="pipe-row">
+        <div class="pipe-step">Input</div>
+        <div class="pipe-val">Re: Your Mortgage Pre-Approval — david.xu@firsthomemortgages.co.uk (2024)</div>
+      </div>
+      <div class="pipe-row">
+        <div class="pipe-step">NFKC + lowercase</div>
+        <div class="pipe-val">re: your mortgage pre-approval — david.xu@firsthomemortgages.co.uk (2024)</div>
+      </div>
+      <div class="pipe-row">
+        <div class="pipe-step">Address rule</div>
+        <div class="pipe-val">
+          <span class="chip addr">david.xu@firsthomemortgages.co.uk</span>
+          <span class="keyline">← kept whole, <em>and</em> split below</span>
+        </div>
+      </div>
+      <div class="pipe-row">
+        <div class="pipe-step">Split on non-alnum</div>
+        <div class="pipe-val">
+          <span class="chip">re</span><span class="chip">your</span><span class="chip">mortgage</span><span class="chip">pre</span><span class="chip">approval</span><span class="chip">david</span><span class="chip">xu</span><span class="chip">firsthomemortgages</span><span class="chip">co</span><span class="chip">uk</span><span class="chip">2024</span>
+        </div>
+      </div>
+      <div class="pipe-row">
+        <div class="pipe-step">Drop len ≤ 1 · stopwords</div>
+        <div class="pipe-val">
+          <span class="chip drop">your</span>
+          <span class="keyline">← "your" is a stopword; nothing here is a single character</span>
+        </div>
+      </div>
+      <div class="pipe-row">
+        <div class="pipe-step">Output · 11 terms</div>
+        <div class="pipe-val">
+          <span class="chip keep">re</span><span class="chip keep">mortgage</span><span class="chip keep">pre</span><span class="chip keep">approval</span><span class="chip addr">david.xu@firsthomemortgages.co.uk</span><span class="chip keep">david</span><span class="chip keep">xu</span><span class="chip keep">firsthomemortgages</span><span class="chip keep">co</span><span class="chip keep">uk</span><span class="chip keep">2024</span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <figcaption>
+    Verbatim output of <code>tokenize()</code>. The address rule is why searching either
+    <code>david.xu@firsthomemortgages.co.uk</code> or just <strong>david xu</strong> finds
+    the same thread — the address is indexed whole <em>and</em> in pieces. Note what
+    survives that you might not expect: <code>pre</code> and <code>approval</code> are
+    separate terms, because the hyphen is a separator. "Pre-approval" is never one token.
+  </figcaption>
+</figure>
+
+<section class="col">
+  <div class="callout">
+    <p class="eyebrow">Consequence</p>
+    <p>
+      Because the tokenizer runs on the query too, matching is exact-token, not substring.
+      Typing <code>mortg</code> matches nothing. This is the single biggest behavioural
+      difference from the <code>String.includes</code> filter this replaced, and it is a
+      deliberate v1 trade: prefix matching is a listed non-goal.
+    </p>
+  </div>
+</section>
+
+<section class="col">
+  <h2>Idea one: repetition counts, but less and less</h2>
+  <p>
+    The oldest idea in retrieval is <em>term frequency</em>: an email that says "mortgage"
+    five times is probably more about mortgages than one that says it once. True. But is
+    it <em>five times</em> more about mortgages? Obviously not. The second mention tells
+    you far less than the first, and the twentieth tells you almost nothing — by then you
+    already knew.
+  </p>
+  <p>
+    So raw tf is wrong. What we want is a curve that rises quickly at first and then
+    flattens — <em>saturates</em>. BM25 gets it with a piece of arithmetic that does
+    exactly that, controlled by a knob called <code>k₁</code>:
+  </p>
+
+  <div class="formula">
+    <span class="t-tf">tf · (k₁ + 1) / (tf + k₁)</span>
+    <span class="anno">&nbsp; ← approaches k₁ + 1 and never exceeds it</span>
+  </div>
+
+  <p>
+    Drag <code>k₁</code> below and watch what it controls. At <code>k₁ = 0</code> the curve
+    collapses into a step: any occurrence at all scores the same, and repetition is
+    ignored entirely. Crank it up and the curve straightens toward raw counting.
+  </p>
+</section>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 2</span>
+    <p class="fig-title">Saturation — what one more mention is worth</p>
+  </div>
+  <div class="fig-body"><div id="chart-sat"></div></div>
+  <div class="controls">
+    <div class="ctrl">
+      <label for="k1">k₁</label>
+      <input type="range" id="k1" min="0" max="5" step="0.1" value="1.2">
+      <output id="k1-out">1.2</output>
+    </div>
+    <span class="keyline">our default: 1.2</span>
+  </div>
+  <div class="legend">
+    <span><i class="swatch solid-accent"></i> BM25 saturation at current k₁</span>
+    <span><i class="swatch ghost"></i> raw term frequency (scaled)</span>
+  </div>
+  <figcaption>
+    At the default <code>k₁ = 1.2</code>, going from 1 to 2 mentions buys you
+    <strong>+37%</strong>; going from 9 to 10 buys <strong>+1%</strong>. The dotted line is
+    what unsaturated counting would do — it never stops rewarding repetition, which is why
+    a page that says "mortgage" 200 times would beat every genuine answer.
+  </figcaption>
+</figure>
+
+<section class="col">
+  <h2>Idea two: rare words carry the meaning</h2>
+  <p>
+    Now the opposite question. The query <em>mortgage pre-approval</em> has three terms
+    after tokenizing. Should they all count equally?
+  </p>
+  <p>
+    Here is where our real corpus makes the point better than any invented example. These
+    are the terms that appear in the most emails, straight out of the index:
+  </p>
+</section>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 3</span>
+    <p class="fig-title">Document frequency vs. information — real terms, real counts</p>
+  </div>
+  <div class="fig-body"><div id="chart-idf"></div></div>
+  <figcaption>
+    <strong>sarah</strong> appears in all 547 emails and earns an IDF of
+    <strong>0.0009</strong> — mathematically almost zero. That is correct and it is the
+    whole idea: this is Sarah's mailbox, so her name distinguishes nothing. Meanwhile
+    <strong>invoice</strong> appears in 2 emails and is worth <strong>5.39</strong>, nearly
+    6,000× as much. A term's value is inversely tied to how many documents it shows up in.
+  </figcaption>
+</figure>
+
+<section class="col">
+  <p>The formula that produces those numbers:</p>
+
+  <div class="formula">
+    <span class="t-idf">idf(t) = ln( 1 + (N − df(t) + 0.5) / (df(t) + 0.5) )</span><br>
+    <span class="anno">N = 547 documents &nbsp;·&nbsp; df(t) = how many contain t</span>
+  </div>
+
+  <p>
+    The <code>1 +</code> is not cosmetic. The textbook version of IDF omits it, and goes
+    <em>negative</em> for any term appearing in more than half the corpus — meaning a
+    document could be penalised for containing one of your query words. On a 547-document
+    personal mailbox, where <code>sarah</code>, <code>chen</code> and <code>com</code> all
+    hit every single document, that isn't a rare edge case; it's Tuesday. We use the
+    Lucene variant, which stays positive forever.
+  </p>
+
+  <div class="callout">
+    <p class="eyebrow">Why stopwords are still worth it</p>
+    <p>
+      IDF already crushes common words, so you might think a stopword list is redundant.
+      Nearly — but a stopword is dropped at <em>index</em> time, so it costs no memory and
+      no postings-list walk at query time. The trade is that a query of pure stopwords
+      ("the and of") has nothing left to match and returns zero results.
+    </p>
+  </div>
+</section>
+
+<section class="col">
+  <h2>Idea three: long documents cheat</h2>
+  <p>
+    Two emails both mention "solicitor" twice. One is a four-line note; the other is the
+    756-token monster at the end of our corpus. The short one is clearly more about
+    solicitors — the long one mentions everything twice, simply by being long.
+  </p>
+  <p>
+    Our corpus has exactly this spread. Bodies run from 3 tokens to 756, averaging 52.7:
+  </p>
+</section>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 4</span>
+    <p class="fig-title">Body lengths across the 547 emails</p>
+  </div>
+  <div class="fig-body"><div id="chart-hist"></div></div>
+  <figcaption>
+    A 15× spread between the typical short notification and the long threads in the tail.
+    Without correction, that tail would dominate every multi-term query.
+  </figcaption>
+</figure>
+
+<section class="col">
+  <p>
+    The fix is to divide tf by how long the document is, relative to average — but only
+    <em>partially</em>, because length isn't purely noise. A long email really might cover
+    more ground. The knob <code>b</code> sets how much of the correction to apply:
+  </p>
+
+  <div class="formula">
+    tf / <span class="t-len">(1 − b + b · len(d) / avgdl)</span><br>
+    <span class="anno">b = 0 → no correction at all &nbsp;·&nbsp; b = 1 → fully proportional to length</span>
+  </div>
+</section>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 5</span>
+    <p class="fig-title">The same two mentions, scored in documents of different lengths</p>
+  </div>
+  <div class="fig-body"><div id="chart-len"></div></div>
+  <div class="controls">
+    <div class="ctrl">
+      <label for="bparam">b</label>
+      <input type="range" id="bparam" min="0" max="1" step="0.05" value="0.75">
+      <output id="b-out">0.75</output>
+    </div>
+    <span class="keyline">our default: 0.75</span>
+  </div>
+  <figcaption>
+    Every document here contains the term exactly twice; the only thing that differs is
+    length. At <strong>b = 0</strong> the bars are flat — length is ignored and the
+    756-token thread ties the four-line note. At our default <strong>0.75</strong> the
+    short documents pull decisively ahead. Push it to <strong>1.0</strong> and long
+    documents are punished hard enough that a genuinely comprehensive email struggles to
+    rank at all.
+  </figcaption>
+</figure>
+
+<section class="col">
+  <h2>Assembling it</h2>
+  <p>
+    That's all three. Multiply the rarity of the term by the saturated, length-corrected
+    frequency of it, and add up across the query:
+  </p>
+
+  <div class="formula">
+    score(<em>d</em>) = Σ<sub>t</sub>&nbsp;
+    <span class="t-idf">idf(t)</span> · <span class="t-tf">saturate(</span><span class="t-len">normalise(</span>tf<span class="t-len">)</span><span class="t-tf">)</span>
+  </div>
+
+  <p>
+    Terms combine as a plain sum, which makes this an <strong>OR</strong>: a document
+    matching two of your three words still scores, it just scores less. There is no
+    <code>AND</code>, no phrase matching, and no notion of the words being near each other.
+    "Mortgage" in the subject and "approval" 400 words later in the body counts exactly the
+    same as the phrase sitting intact.
+  </p>
+</section>
+
+<section class="col">
+  <h2>BM25F: not all fields are equal</h2>
+  <p>
+    An email isn't a bag of text; it's a subject, a body, a sender and a recipient. A word
+    in the subject line is a much stronger signal than the same word buried in a
+    quoted reply chain. Plain BM25 can't express that. BM25F — the F is for fields — can,
+    by giving each field a weight:
+  </p>
+</section>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 6</span>
+    <p class="fig-title">Field weights, and the average length of each field</p>
+  </div>
+  <div class="fig-body">
+    <div class="fields">
+      <div class="field-row">
+        <span class="field-name">subject</span><span class="field-w">×3</span>
+        <span class="field-bar" style="width:100%">avg 4.75 tokens</span>
+      </div>
+      <div class="field-row">
+        <span class="field-name">from</span><span class="field-w">×2</span>
+        <span class="field-bar" style="width:66.6%">avg 5.10 tokens</span>
+      </div>
+      <div class="field-row">
+        <span class="field-name">body</span><span class="field-w">×1</span>
+        <span class="field-bar" style="width:33.3%">avg 52.69 tokens</span>
+      </div>
+      <div class="field-row">
+        <span class="field-name">to</span><span class="field-w">×1</span>
+        <span class="field-bar" style="width:33.3%">avg 5.77 tokens</span>
+      </div>
+    </div>
+  </div>
+  <figcaption>
+    A starting guess, to be tuned against evals — not a claim. Note the second column:
+    length normalisation is computed <strong>per field</strong>, each against its own
+    average. A 5-token subject is compared to other subjects, not to 52-token bodies, so a
+    long body can no longer dilute a subject hit.
+  </figcaption>
+</figure>
+
+<section class="col">
+  <h3>The one subtle decision</h3>
+  <p>
+    Given per-field frequencies, there are two ways to combine them, and only one is
+    right. You can score each field separately and add the scores, or you can add the
+    weighted frequencies first and saturate the total <em>once</em>. We do the latter, and
+    here's what goes wrong if you don't:
+  </p>
+</section>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 7</span>
+    <p class="fig-title">Saturate-then-sum over-rewards documents that match weakly everywhere</p>
+  </div>
+  <div class="fig-body"><div id="chart-order"></div></div>
+  <div class="legend">
+    <span><i class="swatch solid-accent"></i> sum, then saturate once — what we do</span>
+    <span><i class="swatch solid-teal"></i> saturate each field, then sum</span>
+  </div>
+  <figcaption>
+    Document A is a real hit: the term is in the subject, weighted 3. Document B is a
+    scattershot match — the term appears once, weakly, in all four fields. Saturating each
+    field separately gives B a score of <strong>2.93</strong> against A's
+    <strong>1.57</strong>, because each of B's four weak matches gets its own generous
+    first-mention bonus. Summing first gives the sane answer: <strong>1.47</strong>, just
+    below the genuine hit. Four weak signals should not outrank one strong one.
+  </figcaption>
+</figure>
+
+<section class="col">
+  <h2>Where the numbers live</h2>
+  <p>
+    None of this would be usable if scoring meant reading 547 emails per keystroke. It
+    doesn't, because of the data structure underneath: an <em>inverted</em> index. Instead
+    of document → words, it stores word → documents.
+  </p>
+</section>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 8</span>
+    <p class="fig-title">The inverted index, as built</p>
+  </div>
+  <div class="fig-body"><div id="diagram-index"></div></div>
+  <figcaption>
+    Searching walks only the postings lists of the query's terms — for
+    <em>mortgage pre-approval</em> that's <strong>28 + 25 + 20 = 73</strong> postings out of
+    4,668 terms, rather than 547 whole documents. Scores accumulate into a map keyed by
+    document, then sort. Complexity is O(Σ df(t) · fields + k log k): it grows with how
+    common your words are, not with how big the mailbox is.
+  </figcaption>
+</figure>
+
+<section class="col">
+  <h2>A score, computed by hand</h2>
+  <p>
+    Abstractions are easy to nod along to, so here is every operation on a three-document
+    corpus small enough to verify with a calculator. This is the exact corpus from
+    <code>bm25.test.ts</code>, and the assertions there check these numbers to six decimal
+    places.
+  </p>
+</section>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 9</span>
+    <p class="fig-title">The toy corpus · query: <span class="tag">mortgage</span></p>
+  </div>
+  <div class="fig-body">
+    <table>
+      <thead>
+        <tr>
+          <th>Doc</th><th>subject</th><th>body</th>
+          <th class="n">len(subj)</th><th class="n">len(body)</th>
+          <th class="n">tf subj</th><th class="n">tf body</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="hi"><td>d1</td><td>mortgage</td><td>mortgage advice</td><td class="n">1</td><td class="n">2</td><td class="n">1</td><td class="n">1</td></tr>
+        <tr class="hi"><td>d2</td><td>advice</td><td>mortgage</td><td class="n">1</td><td class="n">1</td><td class="n">0</td><td class="n">1</td></tr>
+        <tr><td>d3</td><td>holiday</td><td>photos of a beach</td><td class="n">1</td><td class="n">2</td><td class="n">0</td><td class="n">0</td></tr>
+      </tbody>
+    </table>
+    <p class="keyline" style="margin-top:1rem">
+      N = 3 &nbsp;·&nbsp; df(mortgage) = 2 &nbsp;·&nbsp; avgdl(subject) = 1.0 &nbsp;·&nbsp;
+      avgdl(body) = 1.667 &nbsp;·&nbsp; w(subject) = 3, w(body) = 1 &nbsp;·&nbsp; k₁ = 1.2, b = 0.75<br>
+      d3's body tokenizes to just <code>photos</code>, <code>beach</code> — "of" is a stopword and "a" is one character.
+    </p>
+  </div>
+</figure>
+
+<section class="col">
+  <ol class="steps">
+    <li>
+      <div class="step-body">
+        <strong>Rarity of the term.</strong> It's in 2 of 3 documents, so it isn't worth much —
+        but the Lucene variant keeps it safely positive.
+        <div class="calc">idf = ln(1 + (3 − 2 + 0.5) / (2 + 0.5)) = ln(1.6) = <strong>0.470004</strong></div>
+      </div>
+    </li>
+    <li>
+      <div class="step-body">
+        <strong>Length correction, per field, for d1.</strong> Its subject is exactly average
+        length so nothing changes; its body is 2 tokens against an average of 1.667, so it's
+        penalised slightly.
+        <div class="calc">subject: 1 − 0.75 + 0.75 · (1 / 1.000) = 1.000<br>body:&nbsp;&nbsp;&nbsp; 1 − 0.75 + 0.75 · (2 / 1.667) = 1.150</div>
+      </div>
+    </li>
+    <li>
+      <div class="step-body">
+        <strong>Weighted frequency for d1</strong> — field weight × tf ÷ correction, summed
+        across fields <em>before</em> any saturation.
+        <div class="calc">tf̃ = (3 × 1 / 1.000) + (1 × 1 / 1.150) = 3.000 + 0.870 = <strong>3.869565</strong></div>
+      </div>
+    </li>
+    <li>
+      <div class="step-body">
+        <strong>Saturate, and scale by rarity.</strong>
+        <div class="calc">score(d1) = 0.470004 × 3.869565 × 2.2 / (3.869565 + 1.2) = <strong>0.789251</strong></div>
+      </div>
+    </li>
+    <li>
+      <div class="step-body">
+        <strong>Now d2</strong>, which has the term only in its body — but in a body that is
+        <em>shorter</em> than average, so normalisation works in its favour.
+        <div class="calc">body: 1 − 0.75 + 0.75 · (1 / 1.667) = 0.700<br>tf̃ = 1 × 1 / 0.700 = 1.428571<br>score(d2) = 0.470004 × 1.428571 × 2.2 / (1.428571 + 1.2) = <strong>0.561961</strong></div>
+      </div>
+    </li>
+    <li>
+      <div class="step-body">
+        <strong>d3 never enters the calculation.</strong> It has no posting for "mortgage", so
+        it contributes nothing and is dropped rather than scored as zero.
+        <div class="calc">→ [ d1 &nbsp;0.789251, &nbsp; d2 &nbsp;0.561961 ]</div>
+      </div>
+    </li>
+  </ol>
+
+  <p>
+    d1 wins by 40%, and you can point at exactly where the win came from. Of d1's
+    weighted frequency of 3.87, a full <strong>3.00</strong> is the single subject hit —
+    the body mention adds only 0.87. d2's lone body mention, even with the short-document
+    bonus pushing it to 1.43, cannot make that up. The subject weight is doing nearly all
+    the work.
+  </p>
+</section>
+
+<section class="col">
+  <h2>The same thing, on the real corpus</h2>
+  <p>
+    Finally, the actual top three for <em>mortgage pre-approval</em> against all 547 emails,
+    broken down by which query term contributed what.
+  </p>
+</section>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 10</span>
+    <p class="fig-title">Score composition · query: <span class="tag">mortgage pre-approval</span></p>
+  </div>
+  <div class="fig-body"><div id="chart-real"></div></div>
+  <div class="legend">
+    <span><i class="swatch solid-accent"></i> mortgage · df 28 · idf 2.96</span>
+    <span><i class="swatch solid-teal"></i> pre · df 25 · idf 3.07</span>
+    <span><i class="swatch dim"></i> approval · df 20 · idf 3.29</span>
+  </div>
+  <figcaption>
+    The three terms contribute almost equally, because they're almost equally rare — they
+    co-occur in the same thread. The winner has all three in its subject <em>and</em> two to
+    three repeats in the body. Third place, a bank notification, matches only in its
+    4-token subject — but that subject is so short, and so entirely on-topic, that
+    per-field normalisation carries it to within 7% of the top result. Short and precise
+    beats long and thorough.
+  </figcaption>
+</figure>
+
+<section class="col">
+  <h2>What it cannot do</h2>
+  <p>
+    BM25 is a lexical ranker. It matches the words you typed, weighted cleverly — and that
+    is the entire extent of its understanding.
+  </p>
+  <ul class="plain">
+    <li><strong>No synonyms or meaning.</strong> "Solicitor" will not find "conveyancer". "Car" will not find "automobile". Nothing in the formula knows what words mean.</li>
+    <li><strong>No phrases or proximity.</strong> "Pre-approval" is two independent terms; a document mentioning them 400 words apart scores identically to one with the phrase intact.</li>
+    <li><strong>No prefixes or fuzziness.</strong> A typo matches nothing at all.</li>
+    <li><strong>No stemming.</strong> "Meeting" and "meetings" are unrelated terms. A deliberate call: every JS stemmer is either a dependency or a 200-line transcription, and it costs recall in confusing ways. Revisit if evals show plural misses.</li>
+    <li><strong>No filters.</strong> No date ranges, no <code>arcId</code>. Those belong in the agent-tool wrapper that knows what query language it wants to expose.</li>
+  </ul>
+  <p>
+    The first two limits are exactly what a semantic embedding index is good at, and the
+    reverse is also true — embeddings are famously bad at exact identifiers, names and
+    rare terms, which is precisely where BM25 is strongest. That complementarity is the
+    reason this was built as a standalone, corpus-agnostic ranker: it is the lexical half
+    of a hybrid search, waiting to be joined to an embedding half by reciprocal rank fusion.
+  </p>
+</section>
+
+<section class="col">
+  <footer>
+    Source · <code>src/lib/search/{tokenize,bm25,emails}.ts</code><br>
+    Spec · <code>docs/bm25-search.md</code> &nbsp;·&nbsp; Tests · 29 in <code>src/lib/search/*.test.ts</code><br>
+    Every figure on this page is computed from the live index over <code>data/emails.json</code> — 547 documents, 4,668 terms.
+  </footer>
+</section>
+
+</main>
+
+<script>
+  (function () {
+    "use strict";
+
+    var NS = "http://www.w3.org/2000/svg";
+
+    function el(tag, attrs) {
+      var node = document.createElementNS(NS, tag);
+      for (var key in attrs) {
+        if (attrs[key] !== null && attrs[key] !== undefined) {
+          node.setAttribute(key, attrs[key]);
+        }
+      }
+      return node;
+    }
+
+    function text(x, y, str, cls, anchor) {
+      var t = el("text", { x: x, y: y, class: cls, "text-anchor": anchor || "start" });
+      t.textContent = str;
+      return t;
+    }
+
+    function frame(opts) {
+      var svg = el("svg", {
+        viewBox: "0 0 " + opts.w + " " + opts.h,
+        role: "img",
+        "aria-label": opts.label
+      });
+      return svg;
+    }
+
+    /* ------------------------------------------------------------------ *
+     * Fig 2 — tf saturation
+     * ------------------------------------------------------------------ */
+    var satHost = document.getElementById("chart-sat");
+    var k1Input = document.getElementById("k1");
+    var k1Out = document.getElementById("k1-out");
+
+    function drawSaturation(k1) {
+      var W = 900, H = 380, ml = 56, mr = 24, mt = 20, mb = 48;
+      var xMax = 12, yMax = 4.2;
+      var svg = frame({ w: W, h: H, label: "Term frequency saturation curve" });
+
+      var px = function (x) { return ml + (x / xMax) * (W - ml - mr); };
+      var py = function (y) { return H - mb - (y / yMax) * (H - mt - mb); };
+
+      var y;
+      for (y = 0; y <= yMax; y += 1) {
+        svg.appendChild(el("line", { x1: ml, y1: py(y), x2: W - mr, y2: py(y), class: "grid-line" }));
+        svg.appendChild(text(ml - 10, py(y) + 4, y.toFixed(0), "tick-text", "end"));
+      }
+
+      var x;
+      for (x = 0; x <= xMax; x += 2) {
+        svg.appendChild(text(px(x), H - mb + 20, String(x), "tick-text", "middle"));
+      }
+
+      svg.appendChild(el("line", { x1: ml, y1: py(0), x2: W - mr, y2: py(0), class: "axis-line" }));
+
+      /* raw tf, scaled so it leaves the top of the plot */
+      var rawPts = [];
+      for (x = 0; x <= xMax; x += 0.25) {
+        rawPts.push(px(x) + "," + py(Math.min(yMax, x * 0.42)));
+      }
+      svg.appendChild(el("polyline", { points: rawPts.join(" "), class: "series-ghost" }));
+
+      /* saturation curve */
+      var pts = [];
+      for (x = 0; x <= xMax; x += 0.1) {
+        var v = k1 === 0 ? (x > 0 ? 1 : 0) : (x * (k1 + 1)) / (x + k1);
+        pts.push(px(x) + "," + py(Math.min(yMax, v)));
+      }
+      svg.appendChild(el("polyline", { points: pts.join(" "), class: "series-main" }));
+
+      /* integer markers + deltas */
+      var marks = [1, 2, 3, 5, 10];
+      marks.forEach(function (m) {
+        var v = k1 === 0 ? 1 : (m * (k1 + 1)) / (m + k1);
+        if (v > yMax) return;
+        svg.appendChild(el("circle", { cx: px(m), cy: py(v), r: 4, class: "dot-main" }));
+        svg.appendChild(text(px(m) + 8, py(v) - 8, v.toFixed(2), "val-label"));
+      });
+
+      /* asymptote */
+      if (k1 > 0 && k1 + 1 <= yMax) {
+        svg.appendChild(el("line", {
+          x1: ml, y1: py(k1 + 1), x2: W - mr, y2: py(k1 + 1),
+          class: "grid-line", "stroke-dasharray": "6 5"
+        }));
+        svg.appendChild(text(W - mr - 4, py(k1 + 1) - 8, "ceiling = k₁ + 1 = " + (k1 + 1).toFixed(1), "note-text", "end"));
+      }
+
+      svg.appendChild(text(ml, H - 8, "TERM FREQUENCY IN DOCUMENT →", "axis-label"));
+      svg.appendChild(text(ml - 44, mt + 4, "SCORE", "axis-label"));
+
+      satHost.replaceChildren(svg);
+    }
+
+    k1Input.addEventListener("input", function () {
+      var v = parseFloat(k1Input.value);
+      k1Out.textContent = v.toFixed(1);
+      drawSaturation(v);
+    });
+    drawSaturation(1.2);
+
+    /* ------------------------------------------------------------------ *
+     * Fig 3 — real df / idf
+     * ------------------------------------------------------------------ */
+    var IDF_TERMS = [
+      { term: "sarah",     df: 547, idf: 0.0009 },
+      { term: "chen",      df: 547, idf: 0.0009 },
+      { term: "re",        df: 340, idf: 0.4759 },
+      { term: "email",     df: 219, idf: 0.9149 },
+      { term: "hi",        df: 166, idf: 1.1913 },
+      { term: "wedding",   df: 63,  idf: 2.1552 },
+      { term: "mortgage",  df: 28,  idf: 2.9564 },
+      { term: "photos",    df: 22,  idf: 3.1928 },
+      { term: "approval",  df: 20,  idf: 3.2859 },
+      { term: "deposit",   df: 15,  idf: 3.5654 },
+      { term: "meeting",   df: 10,  idf: 3.9549 },
+      { term: "solicitor", df: 6,   idf: 4.4345 },
+      { term: "invoice",   df: 2,   idf: 5.3900 }
+    ];
+
+    (function drawIdf() {
+      var rowH = 30, ml = 96, mr = 130, mt = 34, mb = 34;
+      var W = 900, H = mt + mb + IDF_TERMS.length * rowH;
+      var maxIdf = 5.6;
+      var svg = frame({ w: W, h: H, label: "Document frequency against inverse document frequency for real corpus terms" });
+
+      var barW = W - ml - mr;
+
+      svg.appendChild(text(ml, mt - 14, "IDF — INFORMATION CARRIED BY THE TERM", "axis-label"));
+      svg.appendChild(text(W - 8, mt - 14, "APPEARS IN", "axis-label", "end"));
+
+      var g;
+      for (g = 0; g <= 5; g += 1) {
+        var gx = ml + (g / maxIdf) * barW;
+        svg.appendChild(el("line", { x1: gx, y1: mt - 4, x2: gx, y2: H - mb + 4, class: "grid-line" }));
+        svg.appendChild(text(gx, H - mb + 20, String(g), "tick-text", "middle"));
+      }
+
+      IDF_TERMS.forEach(function (row, i) {
+        var y = mt + i * rowH;
+        var w = Math.max(1.5, (row.idf / maxIdf) * barW);
+        var hot = row.term === "mortgage" || row.term === "approval";
+        svg.appendChild(el("rect", {
+          x: ml, y: y + 5, width: w, height: rowH - 13, rx: 1,
+          class: hot ? "bar-main" : (row.idf < 1 ? "bar-dim" : "bar-alt")
+        }));
+        svg.appendChild(text(ml - 10, y + rowH / 2 + 3, row.term, "bar-label", "end"));
+        svg.appendChild(text(ml + w + 8, y + rowH / 2 + 3, row.idf.toFixed(4), "val-label"));
+        svg.appendChild(text(W - 8, y + rowH / 2 + 3, String(row.df), "tick-text", "end"));
+      });
+
+      svg.appendChild(el("line", { x1: ml, y1: H - mb + 4, x2: W - mr, y2: H - mb + 4, class: "axis-line" }));
+      document.getElementById("chart-idf").appendChild(svg);
+    })();
+
+    /* ------------------------------------------------------------------ *
+     * Fig 4 — body length histogram
+     * ------------------------------------------------------------------ */
+    var HIST = [
+      { bucket: "0–19", count: 164 },
+      { bucket: "20–39", count: 65 },
+      { bucket: "40–59", count: 133 },
+      { bucket: "60–79", count: 138 },
+      { bucket: "80–99", count: 27 },
+      { bucket: "100–119", count: 4 },
+      { bucket: "200+", count: 16 }
+    ];
+
+    (function drawHist() {
+      var W = 900, H = 300, ml = 52, mr = 24, mt = 24, mb = 56;
+      var svg = frame({ w: W, h: H, label: "Histogram of email body lengths in tokens" });
+      var maxC = 170;
+      var innerW = W - ml - mr, innerH = H - mt - mb;
+      var slot = innerW / HIST.length;
+
+      var g;
+      for (g = 0; g <= 150; g += 50) {
+        var gy = H - mb - (g / maxC) * innerH;
+        svg.appendChild(el("line", { x1: ml, y1: gy, x2: W - mr, y2: gy, class: "grid-line" }));
+        svg.appendChild(text(ml - 10, gy + 4, String(g), "tick-text", "end"));
+      }
+
+      HIST.forEach(function (d, i) {
+        var h = (d.count / maxC) * innerH;
+        var x = ml + i * slot + slot * 0.18;
+        var w = slot * 0.64;
+        svg.appendChild(el("rect", {
+          x: x, y: H - mb - h, width: w, height: h, rx: 1,
+          class: d.bucket === "200+" ? "bar-main" : "bar-alt"
+        }));
+        svg.appendChild(text(x + w / 2, H - mb - h - 8, String(d.count), "val-label", "middle"));
+        svg.appendChild(text(x + w / 2, H - mb + 20, d.bucket, "tick-text", "middle"));
+      });
+
+      svg.appendChild(el("line", { x1: ml, y1: H - mb, x2: W - mr, y2: H - mb, class: "axis-line" }));
+      svg.appendChild(text(ml, H - 12, "BODY LENGTH IN TOKENS →", "axis-label"));
+      svg.appendChild(text(ml - 40, mt - 6, "EMAILS", "axis-label"));
+      document.getElementById("chart-hist").appendChild(svg);
+    })();
+
+    /* ------------------------------------------------------------------ *
+     * Fig 5 — length normalisation
+     * ------------------------------------------------------------------ */
+    var LEN_DOCS = [
+      { name: "4-line note", len: 12 },
+      { name: "short reply", len: 30 },
+      { name: "typical email", len: 53 },
+      { name: "long update", len: 120 },
+      { name: "thread digest", len: 400 },
+      { name: "longest in corpus", len: 756 }
+    ];
+    var AVGDL = 52.69;
+
+    var bInput = document.getElementById("bparam");
+    var bOut = document.getElementById("b-out");
+    var lenHost = document.getElementById("chart-len");
+
+    function drawLen(b) {
+      var W = 900, H = 320, ml = 150, mr = 90, mt = 24, mb = 44;
+      var svg = frame({ w: W, h: H, label: "Effect of length normalisation on documents of different lengths" });
+      var innerW = W - ml - mr;
+      var rowH = (H - mt - mb) / LEN_DOCS.length;
+      var maxScore = 3.4;
+      var tf = 2;
+
+      var g;
+      for (g = 0; g <= 3; g += 1) {
+        var gx = ml + (g / maxScore) * innerW;
+        svg.appendChild(el("line", { x1: gx, y1: mt - 4, x2: gx, y2: H - mb, class: "grid-line" }));
+        svg.appendChild(text(gx, H - mb + 20, String(g), "tick-text", "middle"));
+      }
+
+      LEN_DOCS.forEach(function (d, i) {
+        var norm = 1 - b + b * (d.len / AVGDL);
+        var val = tf / norm;
+        var y = mt + i * rowH;
+        var w = Math.max(1.5, (Math.min(val, maxScore) / maxScore) * innerW);
+        svg.appendChild(el("rect", {
+          x: ml, y: y + 4, width: w, height: rowH - 12, rx: 1,
+          class: d.len < AVGDL ? "bar-main" : "bar-alt"
+        }));
+        svg.appendChild(text(ml - 10, y + rowH / 2 + 2, d.name, "bar-label", "end"));
+        svg.appendChild(text(ml - 10, y + rowH / 2 + 15, d.len + " tokens", "note-text", "end"));
+        svg.appendChild(text(ml + w + 8, y + rowH / 2 + 4, val.toFixed(2), "val-label"));
+      });
+
+      svg.appendChild(el("line", { x1: ml, y1: H - mb, x2: W - mr, y2: H - mb, class: "axis-line" }));
+      svg.appendChild(text(ml, H - 10, "NORMALISED TF (TERM APPEARS TWICE IN EVERY DOCUMENT) →", "axis-label"));
+      lenHost.replaceChildren(svg);
+    }
+
+    bInput.addEventListener("input", function () {
+      var v = parseFloat(bInput.value);
+      bOut.textContent = v.toFixed(2);
+      drawLen(v);
+    });
+    drawLen(0.75);
+
+    /* ------------------------------------------------------------------ *
+     * Fig 7 — saturation order
+     * ------------------------------------------------------------------ */
+    (function drawOrder() {
+      var W = 900, H = 300, ml = 200, mr = 120, mt = 40, mb = 40;
+      var svg = frame({ w: W, h: H, label: "Comparison of summing before or after saturation" });
+      var innerW = W - ml - mr;
+      var maxV = 3.2;
+      var k1 = 1.2;
+      var sat = function (v) { return (v * (k1 + 1)) / (v + k1); };
+
+      var docs = [
+        { name: "Doc A", detail: "subject ×3, nowhere else", parts: [3, 0, 0, 0] },
+        { name: "Doc B", detail: "0.6 in all four fields", parts: [0.6, 0.6, 0.6, 0.6] }
+      ];
+
+      var g;
+      for (g = 0; g <= 3; g += 1) {
+        var gx = ml + (g / maxV) * innerW;
+        svg.appendChild(el("line", { x1: gx, y1: mt - 10, x2: gx, y2: H - mb, class: "grid-line" }));
+        svg.appendChild(text(gx, H - mb + 20, String(g), "tick-text", "middle"));
+      }
+
+      docs.forEach(function (d, i) {
+        var sum = d.parts.reduce(function (a, c) { return a + c; }, 0);
+        var right = sat(sum);
+        var wrong = d.parts.map(sat).reduce(function (a, c) { return a + c; }, 0);
+        var y = mt + i * 110;
+
+        svg.appendChild(text(ml - 14, y + 20, d.name, "bar-label", "end"));
+        svg.appendChild(text(ml - 14, y + 36, d.detail, "note-text", "end"));
+
+        svg.appendChild(el("rect", { x: ml, y: y, width: (right / maxV) * innerW, height: 26, rx: 1, class: "bar-main" }));
+        svg.appendChild(text(ml + (right / maxV) * innerW + 8, y + 18, right.toFixed(2), "val-label"));
+
+        svg.appendChild(el("rect", {
+          x: ml, y: y + 34, width: (wrong / maxV) * innerW, height: 26, rx: 1,
+          class: "bar-alt", opacity: 0.55
+        }));
+        svg.appendChild(text(ml + (wrong / maxV) * innerW + 8, y + 52, wrong.toFixed(2), "val-label"));
+      });
+
+      /* the crossing: B beats A under the wrong order */
+      var aRight = sat(3);
+      svg.appendChild(el("line", {
+        x1: ml + (aRight / maxV) * innerW, y1: mt - 10,
+        x2: ml + (aRight / maxV) * innerW, y2: H - mb,
+        class: "grid-line", "stroke-dasharray": "4 4"
+      }));
+      svg.appendChild(text(ml + (aRight / maxV) * innerW + 6, H - mb - 6, "A's correct score — B overtakes it →", "note-text"));
+
+      svg.appendChild(el("line", { x1: ml, y1: H - mb, x2: W - mr, y2: H - mb, class: "axis-line" }));
+      document.getElementById("chart-order").appendChild(svg);
+    })();
+
+    /* ------------------------------------------------------------------ *
+     * Fig 8 — inverted index diagram
+     * ------------------------------------------------------------------ */
+    (function drawIndex() {
+      var W = 900, H = 340;
+      var svg = frame({ w: W, h: H, label: "Diagram of the inverted index structure" });
+
+      var rows = [
+        { term: "mortgage", df: 28, post: ["{doc 0, subject:1 body:3}", "{doc 4, subject:1 body:2}", "{doc 91, subject:1}", "…25 more"] },
+        { term: "pre", df: 25, post: ["{doc 0, subject:1 body:3}", "{doc 4, subject:1 body:1}", "…23 more"] },
+        { term: "approval", df: 20, post: ["{doc 0, subject:1 body:2}", "{doc 91, subject:1}", "…18 more"] },
+        { term: "sarah", df: 547, post: ["{doc 0, to:1}", "{doc 1, to:1}", "…545 more"] }
+      ];
+
+      svg.appendChild(text(24, 26, "TERM", "axis-label"));
+      svg.appendChild(text(150, 26, "DF", "axis-label"));
+      svg.appendChild(text(210, 26, "POSTINGS LIST — DOCUMENT INDEX + PER-FIELD TERM COUNTS", "axis-label"));
+
+      rows.forEach(function (r, i) {
+        var y = 52 + i * 62;
+        svg.appendChild(el("rect", { x: 20, y: y, width: 112, height: 34, rx: 2, class: i < 3 ? "bar-main" : "bar-dim" }));
+        var tt = text(30, y + 22, r.term, "bar-label");
+        /* var() is not valid in a presentation attribute — set it as CSS */
+        tt.style.fill = i < 3 ? "var(--paper)" : "var(--ink-soft)";
+        svg.appendChild(tt);
+        svg.appendChild(text(148, y + 22, String(r.df), "val-label"));
+
+        /* connector starts clear of the df figure so it doesn't strike through it */
+        svg.appendChild(el("line", { x1: 190, y1: y + 17, x2: 204, y2: y + 17, class: "axis-line" }));
+
+        var x = 210;
+        r.post.forEach(function (p) {
+          var w = p.length * 6.4 + 14;
+          svg.appendChild(el("rect", { x: x, y: y + 2, width: w, height: 30, rx: 2, class: "bar-dim", opacity: 0.5 }));
+          svg.appendChild(text(x + 7, y + 22, p, "note-text"));
+          x += w + 8;
+        });
+      });
+
+      svg.appendChild(text(24, H - 14, "QUERY WALKS ONLY THE HIGHLIGHTED ROWS — 73 POSTINGS, NOT 547 DOCUMENTS", "axis-label"));
+      document.getElementById("diagram-index").appendChild(svg);
+    })();
+
+    /* ------------------------------------------------------------------ *
+     * Fig 10 — real query composition
+     * ------------------------------------------------------------------ */
+    var REAL = [
+      {
+        subject: "Your Mortgage Pre-Approval - Great News!",
+        from: "david.xu@firsthomemortgages.co.uk",
+        detail: "subject 5 tok · body 89 tok",
+        parts: [5.2169, 5.4132, 5.6238],
+        total: 16.2539
+      },
+      {
+        subject: "Initial Mortgage Pre-Approval Consultation",
+        from: "david.xu@firsthomemortgages.co.uk",
+        detail: "subject 5 tok · body 72 tok",
+        parts: [5.1238, 5.0859, 5.4477],
+        total: 15.6574
+      },
+      {
+        subject: "Mortgage pre-approval update",
+        from: "noreply@lloydsbank.co.uk",
+        detail: "subject 4 tok · body 4 tok · subject-only match",
+        parts: [4.8083, 4.9892, 5.3442],
+        total: 15.1418
+      }
+    ];
+
+    (function drawReal() {
+      var W = 900, H = 340, ml = 40, mr = 40, mt = 58, mb = 44;
+      var svg = frame({ w: W, h: H, label: "Stacked score composition for the top three real results" });
+      var innerW = W - ml - mr;
+      var maxT = 18;
+      var rowH = 76;
+
+      var g;
+      for (g = 0; g <= 18; g += 3) {
+        var gx = ml + (g / maxT) * innerW;
+        svg.appendChild(el("line", { x1: gx, y1: mt - 8, x2: gx, y2: H - mb, class: "grid-line" }));
+        svg.appendChild(text(gx, H - mb + 20, String(g), "tick-text", "middle"));
+      }
+
+      var classes = ["bar-main", "bar-alt", "bar-dim"];
+
+      REAL.forEach(function (d, i) {
+        var y = mt + i * rowH;
+        svg.appendChild(text(ml, y - 8, d.subject, "bar-label"));
+        svg.appendChild(text(W - mr, y - 8, d.total.toFixed(2), "val-label", "end"));
+
+        var x = ml;
+        d.parts.forEach(function (p, j) {
+          var w = (p / maxT) * innerW;
+          svg.appendChild(el("rect", { x: x, y: y, width: w, height: 24, rx: 1, class: classes[j] }));
+          var lbl = text(x + w / 2, y + 17, p.toFixed(2), "val-label", "middle");
+          /* the two saturated fills need the opposite-of-fill token; the dim
+             fill tracks the surface, so plain ink reads on it in both themes */
+          lbl.style.fill = j < 2 ? "var(--paper)" : "var(--ink)";
+          svg.appendChild(lbl);
+          x += w;
+        });
+
+        svg.appendChild(text(ml, y + 42, d.detail + " · " + d.from, "note-text"));
+      });
+
+      svg.appendChild(el("line", { x1: ml, y1: H - mb, x2: W - mr, y2: H - mb, class: "axis-line" }));
+      svg.appendChild(text(ml, H - 12, "BM25F SCORE →", "axis-label"));
+      document.getElementById("chart-real").appendChild(svg);
+    })();
+  })();
+</script>
