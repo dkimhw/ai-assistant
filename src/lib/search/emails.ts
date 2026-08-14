@@ -30,20 +30,23 @@ let cachedEmails: Email[] | undefined;
 let cachedEmailsById: Map<string, Email> | undefined;
 let cachedIndex: BM25Index | undefined;
 
-const loadEmails = (): Email[] => {
+/** The whole corpus, read from disk once. Server-only. */
+export const getAllEmails = (): Email[] => {
   cachedEmails ??= JSON.parse(fs.readFileSync(EMAILS_PATH, "utf-8")) as Email[];
   return cachedEmails;
 };
 
 const emailsById = (): Map<string, Email> => {
-  cachedEmailsById ??= new Map(loadEmails().map((email) => [email.id, email]));
+  cachedEmailsById ??= new Map(
+    getAllEmails().map((email) => [email.id, email])
+  );
   return cachedEmailsById;
 };
 
 /** Memoised module singleton — the corpus is read and indexed once. */
 export const getEmailIndex = (): BM25Index => {
   cachedIndex ??= buildBM25Index({
-    documents: loadEmails().map((email) => ({
+    documents: getAllEmails().map((email) => ({
       id: email.id,
       fields: {
         subject: email.subject,
