@@ -3,13 +3,13 @@ import { createOpenAI } from "@ai-sdk/openai";
 /**
  * The chat model, in one place.
  *
- * A mini tier on purpose: the chat loop is about to be given a search tool, and
- * that job needs reliable tool-call formatting, sound judgement about whether to
- * search at all, and low latency in a streaming UI — not frontier reasoning. The
+ * A mini tier on purpose: the chat loop is given a search tool, and that job
+ * needs reliable tool-call formatting, sound judgement about whether to search
+ * at all, and low latency in a streaming UI — not frontier reasoning. The
  * flagship is overkill and slower; nano is less reliable at deciding *whether*
  * to call a tool and at rewriting a question into good search terms.
  *
- * Title generation stays on Gemini — it is a one-shot, tool-free call.
+ * Titles run a tier below, on the same provider — see `TITLE_MODEL`.
  */
 export const CHAT_MODEL = "gpt-5.4-mini";
 
