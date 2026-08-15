@@ -19,9 +19,6 @@ import { generateTitleForChat } from "./generate-title";
 import { getChatModel } from "./model";
 import { chatTools } from "./tools";
 
-// Allow streaming responses up to 30 seconds
-export const maxDuration = 30;
-
 export type MyTools = InferUITools<typeof chatTools>;
 
 export type MyMessage = UIMessage<
