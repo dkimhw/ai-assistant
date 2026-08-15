@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { chunkEmails } from "../src/lib/search/email-chunks";
+import { chunksOfSource } from "../src/lib/search/documents";
 import {
   createOpenAIEmbedder,
   DEFAULT_EMBEDDING_DIMENSIONS,
@@ -9,10 +9,10 @@ import {
 } from "../src/lib/search/embedder";
 import {
   encodeVectors,
-  fingerprintTexts,
+  fingerprintChunks,
   type VectorArtifact,
 } from "../src/lib/search/vector-artifact";
-import type { Email } from "../src/lib/search/emails";
+import { emailSource, getAllEmails } from "../src/lib/search/emails";
 
 /**
  * Builds the committed vector artifacts. One command, run after any change to
@@ -45,7 +45,6 @@ const TEST_QUERIES = [
 ];
 
 const DATA_DIR = path.join(process.cwd(), "data");
-const EMAILS_PATH = path.join(DATA_DIR, "emails.json");
 const VECTORS_PATH = path.join(DATA_DIR, "email-vectors.json");
 const QUERY_VECTORS_PATH = path.join(DATA_DIR, "query-vectors.json");
 
@@ -86,8 +85,8 @@ const main = async () => {
     dimensions: DEFAULT_EMBEDDING_DIMENSIONS,
   });
 
-  const emails = JSON.parse(fs.readFileSync(EMAILS_PATH, "utf-8")) as Email[];
-  const chunks = chunkEmails({ emails });
+  const emails = getAllEmails();
+  const chunks = chunksOfSource({ source: emailSource });
   const texts = chunks.map((chunk) => chunk.text);
 
   const characters = texts.reduce((total, text) => total + text.length, 0);
@@ -108,7 +107,7 @@ const main = async () => {
     artifact: {
       model: embedder.model,
       dimensions: embedder.dimensions,
-      fingerprint: fingerprintTexts({ texts }),
+      fingerprint: fingerprintChunks({ chunks }),
       ids: chunks.map((chunk) => chunk.id),
       vectors: encodeVectors({ vectors }),
     },
@@ -125,7 +124,11 @@ const main = async () => {
     artifact: {
       model: embedder.model,
       dimensions: embedder.dimensions,
-      fingerprint: fingerprintTexts({ texts: TEST_QUERIES }),
+      // The query artifact is keyed by the query string itself, so its ids and
+      // its texts are the same thing.
+      fingerprint: fingerprintChunks({
+        chunks: TEST_QUERIES.map((query) => ({ id: query, text: query })),
+      }),
       ids: TEST_QUERIES,
       vectors: encodeVectors({ vectors: queryVectors }),
     },
