@@ -1,42 +1,82 @@
 # Route standards
 
-React Router v7 with file-based routing. Routes go in `app/routes/`. Each route
-file can export `loader`, `action`, `default` (component), `meta`, and
-`ErrorBoundary`.
+Next.js 15 App Router. Everything lives under `src/app/`. There are three ways
+into server code, and they are not interchangeable.
 
-**Don't put business logic directly in routes** — call into a service in
-`app/services/` instead. Routes parse input, call a service, and shape the response.
+| Kind               | Where                      | Use for                                    |
+| ------------------ | -------------------------- | ------------------------------------------ |
+| Page               | `src/app/**/page.tsx`      | Rendering a screen; reads data directly    |
+| Route handler      | `src/app/api/**/route.ts`  | Streaming and anything the AI SDK calls    |
+| Server action      | `src/app/actions/*.ts`     | Mutations invoked from client components   |
+
+**Don't put business logic in any of them.** Call into `src/lib/*` — see
+[lib.md](lib.md). Routes parse input, call a module, and shape the response.
+
+## Pages
+
+Pages are async server components. `searchParams` is a **Promise** in Next 15 —
+await it, and coerce defensively, since every value is user-controlled:
+
+```tsx
+export default async function SearchPage(props: {
+  searchParams: Promise<{ q?: string; page?: string }>;
+}) {
+  const searchParams = await props.searchParams;
+  const query = searchParams.q || "";
+  const page = Math.max(1, Math.floor(Number(searchParams.page)) || 1);
+```
+
+`Number(undefined)` is `NaN` and `NaN || 1` is `1`, so that idiom handles
+missing, non-numeric, negative, and fractional input in one line. Reuse it.
+
+Route-local components live in the route folder next to the page
+(`src/app/search/search-input.tsx`), not in `src/components/`. Only genuinely
+shared components graduate — see [ui.md](ui.md).
+
+## Server actions
+
+`"use server"` at the top of the file, one file per domain in
+`src/app/actions/`. Every action takes an **object parameter** and is named with
+an `Action` suffix:
+
+```ts
+export async function createMemoryAction(opts: {
+  title: string;
+  content: string;
+}): Promise<DB.Memory> {
+  return await createMemory({ id: crypto.randomUUID(), ...opts });
+}
+```
+
+Actions are a thin wrapper over the persistence layer. Ids are minted here with
+`crypto.randomUUID()`, not in the persistence layer, so the caller controls
+identity.
+
+## Route handlers and streaming
+
+`src/app/api/chat/route.ts` is the reference. The rules that matter:
+
+- **Validate before use.** Run `safeValidateUIMessages` on the request body and
+  return `400` with the error message on failure. Never pass an unvalidated body
+  to `convertToModelMessages`.
+- **Guard the message invariant explicitly** — non-empty, last message is from
+  the user — each with its own `400`. These are cheap and catch client bugs at
+  the boundary.
+- **Type the stream.** `MyMessage` is the project's `UIMessage` specialisation
+  and carries the custom `data-frontend-action` part. Pass it as the generic to
+  `safeValidateUIMessages<MyMessage>` and `createUIMessageStream<MyMessage>`.
+- **Persist inside the stream, not around it.** Writes happen in `execute` and
+  `onFinish` so a client disconnect still records the exchange.
+- **Fire-and-await background work.** Title generation starts early, is kept as a
+  promise, and is awaited at the end of `execute` — don't block the first token
+  on it.
+- Set `export const maxDuration` on any streaming handler.
+
+Custom UI signals go over `writer.write({ type: "data-...", transient: true })`.
+`transient` means it isn't persisted into message history; use it for anything
+that's an instruction to the UI rather than conversation content.
 
 ## Validation
 
-For form validation in route actions, use `parseFormData(formData, zodSchema)`
-from `~/lib/validation`. It returns `{ success, data, errors }`.
-
-- Route params → `parseParams`
-- JSON request bodies → `parseJsonBody`
-
-## Multiple submissions in one action
-
-When a single route action handles several different form submissions (a page
-with both a "mark complete" and a "delete comment" button), use a Zod
-discriminated union on an `intent` field:
-
-```ts
-const schema = z.discriminatedUnion("intent", [
-  z.object({ intent: z.literal("mark-complete") }),
-  z.object({
-    intent: z.literal("delete-comment"),
-    commentId: z.coerce.number(),
-  }),
-]);
-```
-
-## Auth
-
-Cookie-based via `~/lib/session`. Use `getCurrentUserId(request)` in loaders and
-actions; it returns `number | null`. Redirect to `/login` when it's `null`.
-
-```ts
-const userId = await getCurrentUserId(request);
-if (!userId) throw redirect("/login");
-```
+Zod is available for request-body and form validation. Validate at the boundary
+— the route handler or the action — and hand `src/lib/*` already-typed values.
