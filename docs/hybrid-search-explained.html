@@ -1,0 +1,1580 @@
+<meta charset="utf-8">
+<title>Inside Hybrid Search</title>
+
+<style>
+  /* ---------- tokens: light is the base, both dark states redefine ---------- */
+  :root {
+    --paper:      #EDF1F0;
+    --surface:    #F7F9F8;
+    --sunken:     #E2E8E7;
+    --ink:        #16232B;
+    --ink-soft:   #3D4E57;
+    --muted:      #64757C;
+    --rule:       #CBD5D3;
+    --rule-soft:  #DDE4E2;
+    --accent:     #D6246E;
+    --accent-dim: #F5D5E2;
+    --teal:       #0E7C86;
+    --teal-dim:   #CFE4E5;
+    --amber:      #A66A00;
+    --grid:       #D5DEDC;
+    --shadow:     0 1px 2px rgba(22, 35, 43, .06), 0 8px 24px -12px rgba(22, 35, 43, .18);
+
+    --display: "Helvetica Neue", Helvetica, "Segoe UI", Arial, sans-serif;
+    --body:    Charter, "Bitstream Charter", "Iowan Old Style", Georgia, serif;
+    --mono:    ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+
+    --measure: 68ch;
+    --wide:    min(1120px, 94vw);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:      #0E1519;
+      --surface:    #161F24;
+      --sunken:     #1C272D;
+      --ink:        #DEE7E6;
+      --ink-soft:   #B3C1C1;
+      --muted:      #8598A0;
+      --rule:       #2C3A41;
+      --rule-soft:  #222E34;
+      --accent:     #FF5C93;
+      --accent-dim: #46202F;
+      --teal:       #3FC2C9;
+      --teal-dim:   #163338;
+      --amber:      #E0A33C;
+      --grid:       #26333A;
+      --shadow:     0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .7);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:      #0E1519;
+    --surface:    #161F24;
+    --sunken:     #1C272D;
+    --ink:        #DEE7E6;
+    --ink-soft:   #B3C1C1;
+    --muted:      #8598A0;
+    --rule:       #2C3A41;
+    --rule-soft:  #222E34;
+    --accent:     #FF5C93;
+    --accent-dim: #46202F;
+    --teal:       #3FC2C9;
+    --teal-dim:   #163338;
+    --amber:      #E0A33C;
+    --grid:       #26333A;
+    --shadow:     0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -12px rgba(0, 0, 0, .7);
+  }
+
+  /* ---------- base ---------- */
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 17px;
+    line-height: 1.62;
+    margin: 0;
+    padding: 0 0 8rem;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .col {
+    width: var(--measure);
+    max-width: 92vw;
+    margin-inline: auto;
+  }
+
+  .bleed {
+    width: var(--wide);
+    margin-inline: auto;
+  }
+
+  p { margin: 0 0 1.1em; }
+  p + p { margin-top: -.15em; }
+
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  h1, h2, h3 {
+    font-family: var(--display);
+    font-weight: 700;
+    letter-spacing: -0.022em;
+    text-wrap: balance;
+    line-height: 1.12;
+  }
+
+  code, .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: .72rem;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 .6rem;
+  }
+
+  /* ---------- masthead ---------- */
+  header.masthead {
+    border-bottom: 1px solid var(--rule);
+    padding: 5.5rem 0 3rem;
+    margin-bottom: 3.5rem;
+  }
+
+  h1 {
+    font-size: clamp(2.6rem, 7vw, 4.4rem);
+    margin: 0 0 1.2rem;
+  }
+
+  .standfirst {
+    font-size: 1.2rem;
+    color: var(--ink-soft);
+    margin-bottom: 2rem;
+  }
+
+  .masthead-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.6rem 2.4rem;
+    padding-top: 1.6rem;
+    border-top: 1px solid var(--rule-soft);
+    font-family: var(--mono);
+    font-size: .8rem;
+  }
+
+  .masthead-meta div { display: flex; flex-direction: column; gap: .25rem; }
+  .masthead-meta dt { color: var(--muted); text-transform: uppercase; letter-spacing: .1em; font-size: .68rem; }
+  .masthead-meta dd { margin: 0; font-size: 1.15rem; font-weight: 500; }
+
+  /* ---------- sections ---------- */
+  section { margin-bottom: 4.5rem; }
+
+  h2 {
+    font-size: clamp(1.7rem, 3.4vw, 2.3rem);
+    margin: 0 0 1rem;
+  }
+
+  h3 {
+    font-size: 1.12rem;
+    letter-spacing: -.01em;
+    margin: 2.4rem 0 .7rem;
+  }
+
+  .lede { font-size: 1.08rem; color: var(--ink-soft); }
+
+  /* ---------- figures ---------- */
+  figure {
+    margin: 2.5rem auto;
+    background: var(--surface);
+    border: 1px solid var(--rule-soft);
+    border-radius: 3px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  .fig-head {
+    display: flex;
+    align-items: baseline;
+    gap: .8rem;
+    padding: 1rem 1.4rem .9rem;
+    border-bottom: 1px solid var(--rule-soft);
+    background: var(--sunken);
+  }
+
+  .fig-num {
+    font-family: var(--mono);
+    font-size: .7rem;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--accent);
+    white-space: nowrap;
+    padding-top: .18rem;
+  }
+
+  .fig-title {
+    font-family: var(--display);
+    font-weight: 600;
+    font-size: .95rem;
+    letter-spacing: -.01em;
+    margin: 0;
+  }
+
+  .fig-body { padding: 1.5rem 1.4rem; overflow-x: auto; }
+
+  figcaption {
+    padding: 0 1.4rem 1.3rem;
+    font-size: .88rem;
+    color: var(--muted);
+    line-height: 1.55;
+  }
+
+  figcaption strong { color: var(--ink-soft); font-weight: 600; }
+
+  /* ---------- controls ---------- */
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.6rem;
+    align-items: center;
+    padding: 0 1.4rem 1.3rem;
+  }
+
+  .ctrl { display: flex; align-items: center; gap: .7rem; font-family: var(--mono); font-size: .78rem; }
+  .ctrl label { color: var(--muted); letter-spacing: .06em; }
+  .ctrl output { color: var(--accent); font-weight: 600; min-width: 3.2em; }
+
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 150px;
+    height: 3px;
+    background: var(--rule);
+    border-radius: 2px;
+    cursor: pointer;
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 15px; height: 15px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--surface);
+    cursor: grab;
+  }
+
+  input[type="range"]::-moz-range-thumb {
+    width: 13px; height: 13px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--surface);
+    cursor: grab;
+  }
+
+  /* ---------- svg chart classes ---------- */
+  svg { display: block; max-width: 100%; height: auto; }
+  .grid-line { stroke: var(--grid); stroke-width: 1; }
+  .axis-line { stroke: var(--rule); stroke-width: 1.5; }
+  .tick-text { fill: var(--muted); font-family: var(--mono); font-size: 11px; }
+  .axis-label { fill: var(--ink-soft); font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+  .series-main { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+  .series-alt { fill: none; stroke: var(--teal); stroke-width: 2; stroke-dasharray: 5 4; }
+  .series-ghost { fill: none; stroke: var(--muted); stroke-width: 1.25; stroke-dasharray: 2 3; opacity: .8; }
+  .bar-main { fill: var(--accent); }
+  .bar-alt { fill: var(--teal); }
+  .bar-dim { fill: var(--rule); }
+  .bar-label { fill: var(--ink-soft); font-family: var(--mono); font-size: 11px; }
+  .val-label { fill: var(--ink); font-family: var(--mono); font-size: 11px; font-weight: 600; }
+  .dot-main { fill: var(--accent); }
+  .note-text { fill: var(--muted); font-family: var(--mono); font-size: 10.5px; }
+  .vec-line { stroke: var(--accent); stroke-width: 2.5; }
+  .vec-line-alt { stroke: var(--teal); stroke-width: 2.5; }
+  .arc-line { fill: none; stroke: var(--amber); stroke-width: 1.5; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 1.2rem; padding: 0 1.4rem 1rem; font-family: var(--mono); font-size: .74rem; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: .45rem; }
+  .swatch { width: 15px; height: 3px; border-radius: 2px; display: inline-block; }
+  .swatch.dot { width: 9px; height: 9px; border-radius: 50%; }
+  .swatch.solid-accent { background: var(--accent); }
+  .swatch.solid-teal { background: var(--teal); }
+  .swatch.dim { background: var(--rule); }
+  .swatch.dash-teal { background: repeating-linear-gradient(90deg, var(--teal) 0 5px, transparent 5px 9px); }
+  .swatch.ghost { background: repeating-linear-gradient(90deg, var(--muted) 0 2px, transparent 2px 5px); }
+
+  /* ---------- formula ---------- */
+  .formula {
+    background: var(--sunken);
+    border-left: 2px solid var(--accent);
+    padding: 1.2rem 1.4rem;
+    margin: 1.8rem 0;
+    font-family: var(--mono);
+    font-size: .92rem;
+    line-height: 1.9;
+    overflow-x: auto;
+  }
+
+  .formula .t-idf   { color: var(--accent); }
+  .formula .t-tf    { color: var(--teal); }
+  .formula .t-len   { color: var(--amber); }
+  .formula .anno    { color: var(--muted); font-size: .82em; }
+
+  .keyline { color: var(--muted); font-family: var(--mono); font-size: .78rem; }
+
+  /* ---------- tables ---------- */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: .82rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  th {
+    text-align: left;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    font-size: .68rem;
+    padding: 0 .9rem .6rem 0;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+
+  td {
+    padding: .5rem .9rem .5rem 0;
+    border-bottom: 1px solid var(--rule-soft);
+    vertical-align: baseline;
+  }
+
+  td.n, th.n { text-align: right; }
+  tr.hi td { background: var(--accent-dim); }
+  tr.dimmed td { color: var(--muted); }
+  .tag { color: var(--accent); }
+  .tag-teal { color: var(--teal); }
+  .miss { color: var(--muted); opacity: .6; }
+
+  /* ---------- pipeline ---------- */
+  .pipe { display: flex; flex-direction: column; gap: .9rem; }
+
+  .pipe-row { display: flex; gap: .9rem; align-items: flex-start; }
+
+  .pipe-step {
+    font-family: var(--mono);
+    font-size: .64rem;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    width: 8.5rem;
+    flex-shrink: 0;
+    padding-top: .45rem;
+  }
+
+  .pipe-val { font-family: var(--mono); font-size: .82rem; line-height: 1.9; word-break: break-word; white-space: pre-wrap; }
+
+  .chip {
+    display: inline-block;
+    background: var(--sunken);
+    border: 1px solid var(--rule-soft);
+    border-radius: 2px;
+    padding: .14rem .45rem;
+    margin: 0 .28rem .28rem 0;
+    font-size: .78rem;
+  }
+
+  .chip.keep { border-color: var(--accent); color: var(--accent); }
+  .chip.drop { opacity: .45; text-decoration: line-through; }
+  .chip.addr { border-color: var(--teal); color: var(--teal); }
+
+  .quoted { color: var(--muted); opacity: .5; text-decoration: line-through; }
+
+  /* ---------- vector strip ---------- */
+  .vecstrip { display: flex; flex-wrap: wrap; gap: .3rem; font-family: var(--mono); font-size: .76rem; }
+  .vecstrip span {
+    background: var(--sunken);
+    border: 1px solid var(--rule-soft);
+    border-radius: 2px;
+    padding: .2rem .4rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .vecstrip .more { border: none; background: none; color: var(--muted); }
+
+  /* ---------- callout ---------- */
+  .callout {
+    border: 1px solid var(--rule);
+    border-left: 2px solid var(--teal);
+    background: var(--surface);
+    padding: 1.1rem 1.3rem;
+    margin: 2rem 0;
+    font-size: .95rem;
+  }
+
+  .callout .eyebrow { color: var(--teal); margin-bottom: .4rem; }
+  .callout p:last-child { margin-bottom: 0; }
+
+  /* ---------- steps ---------- */
+  ol.steps { counter-reset: s; list-style: none; padding: 0; margin: 1.5rem 0; display: flex; flex-direction: column; gap: 1.4rem; }
+  ol.steps li { counter-increment: s; display: grid; grid-template-columns: 2rem 1fr; gap: 1rem; }
+  ol.steps li::before {
+    content: counter(s);
+    font-family: var(--mono);
+    font-size: .78rem;
+    color: var(--accent);
+    border-top: 1px solid var(--accent);
+    padding-top: .3rem;
+  }
+  ol.steps .step-body { font-size: .96rem; }
+  ol.steps .calc { font-family: var(--mono); font-size: .82rem; color: var(--ink-soft); background: var(--sunken); padding: .5rem .7rem; border-radius: 2px; margin-top: .5rem; overflow-x: auto; }
+
+  ul.plain { list-style: none; padding: 0; margin: 1.2rem 0; display: flex; flex-direction: column; gap: .7rem; }
+  /* The marker is absolutely positioned rather than a grid column: inline
+     content in a grid item splits into one anonymous item per element, so an
+     <li> starting with <strong> would overflow a two-column track. */
+  ul.plain li { position: relative; padding-left: 1.8rem; font-size: .97rem; }
+  ul.plain li::before { content: "—"; color: var(--accent); font-family: var(--mono); position: absolute; left: 0; }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 1.6rem;
+    margin-top: 4rem;
+    font-family: var(--mono);
+    font-size: .76rem;
+    color: var(--muted);
+    line-height: 1.8;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  }
+
+  @media (max-width: 640px) {
+    body { font-size: 16px; }
+    .pipe-row { flex-direction: column; gap: .2rem; }
+    .pipe-step { width: auto; padding-top: 0; }
+    .masthead-meta { gap: 1.1rem 1.6rem; }
+  }
+</style>
+
+<header class="masthead">
+  <div class="col">
+    <p class="eyebrow">Retrieval · src/lib/search</p>
+    <h1>Beyond the Words</h1>
+    <p class="standfirst">
+      BM25 can only find emails that share your vocabulary. Ask it when you have to pay
+      the solicitor and it will happily return an email about climbing grades. This walks
+      through the fix — embeddings, cosine similarity, and rank fusion — using the real
+      606 vectors built over the 547 emails in <code>data/emails.json</code>.
+    </p>
+    <dl class="masthead-meta">
+      <div><dt>Emails</dt><dd class="num">547</dd></div>
+      <div><dt>Vectors</dt><dd class="num">606</dd></div>
+      <div><dt>Indexed</dt><dd class="num">463</dd></div>
+      <div><dt>Dimensions</dt><dd class="num">1,536</dd></div>
+      <div><dt>Artifact</dt><dd class="num">4.99 MB</dd></div>
+      <div><dt>Rankers</dt><dd class="num">2</dd></div>
+      <div><dt>Query cost</dt><dd class="num">~400 ms</dd></div>
+    </dl>
+  </div>
+</header>
+
+<main>
+
+<section class="col">
+  <h2>The shape of the problem</h2>
+  <p>
+    The lexical ranker is a good one. It weights fields, saturates term frequency,
+    normalises for length — all of the arithmetic in
+    <a href="./bm25-explained.html">Inside BM25</a>. And it has exactly one blind spot,
+    which happens to be enormous: it can only score words that are <em>in the query</em>.
+  </p>
+  <p>
+    Here is a question a person would actually ask their own email archive, run against
+    the real corpus through the real BM25F index. Nothing is invented; this is the top of
+    the list.
+  </p>
+</section>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 1</span>
+    <p class="fig-title">"when do I need to hand over the remaining money before I can pick up the keys" — lexical only</p>
+  </div>
+  <div class="fig-body">
+    <table>
+      <thead>
+        <tr><th class="n">#</th><th>Subject</th><th>Thread</th><th class="n">BM25</th></tr>
+      </thead>
+      <tbody>
+        <tr class="dimmed"><td class="n">1</td><td>Re: Training goals - 5.10 to 5.11 progression</td><td>climbing</td><td class="n">8.74</td></tr>
+        <tr class="dimmed"><td class="n">2</td><td>Re: New Price Alert: Manchester to Auckland</td><td>new zealand</td><td class="n">7.36</td></tr>
+        <tr class="dimmed"><td class="n">3</td><td>Congratulations on your offer! 🏡</td><td>house</td><td class="n">6.32</td></tr>
+        <tr class="dimmed"><td class="n">4</td><td>Re: Workshop Testimonial Request</td><td>climbing</td><td class="n">5.87</td></tr>
+        <tr class="dimmed"><td class="n">5</td><td>Re: Long time no chat! New Zealand trip?</td><td>new zealand</td><td class="n">5.81</td></tr>
+        <tr><td colspan="4" class="keyline" style="border:none; padding-top:.9rem">⋮</td></tr>
+        <tr class="hi"><td class="n">12</td><td>Exchange of Contracts - 42 Maple Grove, Chorlton</td><td>house</td><td class="n">4.98</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <figcaption>
+    The email that answers the question in full — with a dated schedule, a balance of
+    £393,750, and a deadline of 25 October — is at <strong>rank 12</strong>, below two
+    emails about climbing grades and two about flights to Auckland. It is not a scoring
+    bug. The query says "money" and "keys"; the email says "balance", "funds",
+    "completion". They share almost nothing, so BM25 has almost nothing to score, and
+    the terms it <em>can</em> score ("need", "pick", "hand") are the ones that carry no
+    meaning at all.
+  </figcaption>
+</figure>
+
+<section class="col">
+  <div class="callout">
+    <p class="eyebrow">The real failure</p>
+    <p>
+      Rank 12 is off the first page. From the searcher's side this looks identical to
+      "your archive does not contain this" — and that silence is the thing worth fixing.
+      People remember what an email was <em>about</em>. Making them guess the sender's
+      vocabulary first is a tax we can stop charging.
+    </p>
+  </div>
+</section>
+
+<section class="col">
+  <h2>Idea one: meaning becomes coordinates</h2>
+  <p>
+    An <em>embedding model</em> is a function from text to a fixed-length list of
+    numbers, trained so that text meaning similar things lands in similar places. We use
+    OpenAI's <code>text-embedding-3-small</code>, which returns 1,536 numbers per input.
+  </p>
+  <p>
+    That is the entire idea, and it is worth sitting with how strange it is. There is no
+    dictionary, no synonym list, no rules about "completion" meaning "handover". The
+    model was trained on enough text that the <em>position</em> of a phrase encodes what
+    it is about, and phrases about the same thing end up as neighbours whether or not
+    they share a single character.
+  </p>
+</section>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 2</span>
+    <p class="fig-title">One real vector, from <code>data/email-vectors.json</code></p>
+  </div>
+  <div class="fig-body">
+    <div class="pipe">
+      <div class="pipe-row">
+        <div class="pipe-step">Input text</div>
+        <div class="pipe-val">Exchange of Contracts - 42 Maple Grove, Chorlton
+
+Total Purchase Price: £437,500
+Less: Deposit already paid: £43,750
+Balance required for completion: £393,750 …</div>
+      </div>
+      <div class="pipe-row">
+        <div class="pipe-step">Out · 1,536 floats</div>
+        <div class="pipe-val">
+          <div class="vecstrip">
+            <span>0.00501</span><span>0.03198</span><span>0.01161</span><span>0.01446</span><span>−0.03101</span><span>−0.01854</span><span>0.05072</span><span>0.00739</span><span class="more">… 1,528 more</span>
+          </div>
+        </div>
+      </div>
+      <div class="pipe-row">
+        <div class="pipe-step">Magnitude</div>
+        <div class="pipe-val">1.000000 <span class="keyline">← normalised when it was produced</span></div>
+      </div>
+    </div>
+  </div>
+  <figcaption>
+    Verbatim, to five decimal places. No individual number means anything you could name
+    — dimension 7 is not "money-ness". Only the <strong>whole 1,536-vector</strong>, and
+    only <em>relative to other vectors</em>, carries information. Every vector is scaled
+    to length 1.0 the moment it is created, which matters for the next step.
+  </figcaption>
+</figure>
+
+<section class="col">
+  <h2>Idea two: nearness is an angle</h2>
+  <p>
+    Given two vectors, how close are they? Not by distance — text length and verbosity
+    stretch vectors in ways that have nothing to do with topic. By <em>angle</em>. Two
+    pieces of text pointing the same direction are about the same thing, however long or
+    short they are.
+  </p>
+  <p>
+    The cosine of that angle is the score: 1.0 for identical direction, 0 for unrelated,
+    negative for opposed. And because both vectors are already unit length, the cosine is
+    just the dot product — multiply componentwise, add it up, done.
+  </p>
+
+  <div class="formula">
+    cos(<span class="t-idf">q</span>, <span class="t-tf">d</span>) =
+    (<span class="t-idf">q</span> · <span class="t-tf">d</span>) /
+    (<span class="t-len">‖q‖ ‖d‖</span>)
+    &nbsp;&nbsp;→&nbsp;&nbsp;
+    <span class="t-idf">q</span> · <span class="t-tf">d</span>
+    &nbsp;&nbsp;<span class="anno">when ‖q‖ = ‖d‖ = 1</span><br>
+    <span class="anno">score(d) = Σ<sub>i=0…1535</sub> q<sub>i</sub> · d<sub>i</sub>
+    &nbsp; — one loop, 1,536 multiply-adds, no divisions</span>
+  </div>
+
+  <p>
+    Normalising at <em>build</em> time rather than query time is the small design choice
+    that makes the hot path this plain. The ranker never computes a magnitude.
+  </p>
+</section>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 3</span>
+    <p class="fig-title">Cosine, in the two dimensions you can actually see</p>
+  </div>
+  <div class="fig-body" id="chart-cos"></div>
+  <div class="controls">
+    <div class="ctrl">
+      <label for="angle">ANGLE BETWEEN q AND d</label>
+      <input type="range" id="angle" min="0" max="180" step="1" value="45">
+      <output id="angle-out">45°</output>
+    </div>
+  </div>
+  <figcaption>
+    Drag it. At <strong>0°</strong> the texts are indistinguishable in meaning and the
+    score is 1. At <strong>90°</strong> they are unrelated and the score is 0. In
+    practice embeddings of natural language barely use the range: measured across this
+    corpus, real pairs sit between about 0.02 and 0.89, and a <em>typical</em> pair sits
+    near 0.13. Negative cosines essentially never occur. That compression is why the
+    <em>floor</em> further down matters so much — the interesting differences all happen
+    in a narrow band.
+  </figcaption>
+</figure>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 4</span>
+    <p class="fig-title">The corpus, flattened from 1,536 dimensions to 2</p>
+  </div>
+  <div class="fig-body" id="chart-scatter"></div>
+  <div class="legend">
+    <span><i class="swatch dot" style="background:var(--accent)"></i> house purchase</span>
+    <span><i class="swatch dot" style="background:var(--teal)"></i> wedding</span>
+    <span><i class="swatch dot" style="background:var(--amber)"></i> consulting</span>
+    <span><i class="swatch dot" style="background:#6E8B99"></i> new zealand</span>
+    <span><i class="swatch dot" style="background:#9A6BAF"></i> climbing</span>
+    <span><i class="swatch dot" style="background:#4E9A6B"></i> photography</span>
+    <span><i class="swatch dot" style="background:var(--ink); width:11px; height:11px"></i> queries</span>
+  </div>
+  <figcaption>
+    450 real chunk vectors, projected onto their first two principal components. Nobody
+    told the model these emails belong to six different parts of a life — it has never
+    seen the <code>arcId</code> field. The clusters are what the <em>text</em> made.
+    <strong>Treat this picture as a hint, not evidence</strong>: 1,534 of the 1,536
+    dimensions have been thrown away to draw it, so two points that look adjacent here
+    may be nothing of the kind in full dimension. The ranking is always done on all
+    1,536.
+  </figcaption>
+</figure>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 5</span>
+    <p class="fig-title">A real similarity ladder, measured from one email</p>
+  </div>
+  <div class="fig-body" id="chart-ladder"></div>
+  <figcaption>
+    Cosine from the <em>Exchange of Contracts</em> financial-breakdown chunk to the rest
+    of the corpus. Its own neighbouring chunks sit at 0.75–0.89 — the same email, said
+    slightly differently. Other conveyancing emails land at 0.56–0.69, sharing barely a
+    phrase with it. The floor of the corpus, at 0.158, is a Spotify
+    <em>Discover Weekly</em> notification. That spread, from 0.89 to 0.16, is the entire
+    signal the semantic ranker has to work with.
+  </figcaption>
+</figure>
+
+<section class="col">
+  <h2>Step zero, again: what exactly gets embedded?</h2>
+  <p>
+    BM25 had a tokenizer as its step zero. The semantic side has a chunker, and it is
+    just as consequential — the model can only place text it is given, so what we hand it
+    <em>is</em> what becomes findable.
+  </p>
+  <p>
+    Four decisions, all of them email-specific, all of them living in the adapter rather
+    than the ranker.
+  </p>
+</section>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 6</span>
+    <p class="fig-title">A real email through the chunker</p>
+  </div>
+  <div class="fig-body">
+    <div class="pipe">
+      <div class="pipe-row">
+        <div class="pipe-step">Raw body · 530 ch</div>
+        <div class="pipe-val">Hi Jennifer,
+
+These look great! Alex and I can definitely make these times. Quick question - for 17 Beech Grove, when you say 'needs modernization', can you give me a bit more context?
+
+Thanks,
+Sarah
+
+<span class="quoted">---
+On Fri, Jun 14 at 10:23, Jennifer Lawson &lt;j.lawson@rightmovepropertyservices.co.uk&gt; wrote:
+[Original email quoted]</span></div>
+      </div>
+      <div class="pipe-row">
+        <div class="pipe-step">1 · Strip quotes</div>
+        <div class="pipe-val"><span class="keyline">attribution line found → everything below it dropped, 530 → 410 chars</span></div>
+      </div>
+      <div class="pipe-row">
+        <div class="pipe-step">2 · Prepend subject</div>
+        <div class="pipe-val"><span class="chip keep">Re: Property Viewing Opportunities - Matched to Your Criteria</span><span class="keyline">+ body</span></div>
+      </div>
+      <div class="pipe-row">
+        <div class="pipe-step">3 · Drop addresses</div>
+        <div class="pipe-val"><span class="chip drop">j.lawson@rightmovepropertyservices.co.uk</span><span class="keyline">← lexical signal, BM25's job</span></div>
+      </div>
+      <div class="pipe-row">
+        <div class="pipe-step">4 · Split if long</div>
+        <div class="pipe-val"><span class="keyline">410 chars &lt; 1,500 → stays whole. One vector.</span></div>
+      </div>
+    </div>
+  </div>
+  <figcaption>
+    <strong>Why strip quotes?</strong> Because every reply in a thread quotes its
+    history. Left in, six messages in one conversation produce six near-identical
+    vectors, and that conversation takes the whole first page for any query it touches.
+    13 of 547 emails here carry quoted text; the heuristic handles
+    <code>&gt;</code> prefixes, Gmail-style attribution, and Outlook separators. It is a
+    heuristic, and quoting conventions vary — a miss shows up as thread clustering in
+    results, which is the first thing to check if the ranking ever looks strange.
+  </figcaption>
+</figure>
+
+<section class="col">
+  <h3>The one email that needed splitting</h3>
+  <p>
+    Most emails here are short — median 434 characters — and a single vector represents
+    them fine. Sixteen are not. The <em>Exchange of Contracts</em> letter runs to 6,660
+    characters and covers, in one message: the financial breakdown, the completion
+    timeline, buildings insurance, which light fittings are included, where to collect
+    the keys, and how to contact the council about council tax.
+  </p>
+  <p>
+    Averaged into one vector, all of that becomes a vague smear of "house admin" — near
+    everything and close to nothing. So bodies over 1,500 characters are split on
+    paragraph boundaries into ~1,200-character chunks with one paragraph of overlap, each
+    carrying the subject line, and each embedded separately.
+  </p>
+
+  <ol class="steps">
+    <li><div class="step-body">
+      <strong>606 vectors from 547 emails.</strong> 531 emails are one chunk each; 16 long
+      ones produce 75 between them.
+      <div class="calc">547 emails → 606 chunks → 606 × 1,536 floats = 930,816 numbers</div>
+    </div></li>
+    <li><div class="step-body">
+      <strong>Chunks are ranked, emails are returned.</strong> Every chunk id is
+      <code>emailId#n</code>. At query time each email takes the score of its
+      best-matching chunk and the rest are discarded, so a six-chunk email cannot occupy
+      six result slots.
+      <div class="calc">semantic top 8 (chunks) → Exchange#1, Exchange#2, Exchange#5, Exchange#4, Completion#0 …
+collapsed to emails → Exchange, Completion, Re: Completion, Conveyancing …</div>
+    </div></li>
+    <li><div class="step-body">
+      <strong>Overlap keeps a point from being cut in half.</strong> The last paragraph of
+      one chunk opens the next, so an idea spanning a paragraph break survives whole in at
+      least one of them.
+    </div></li>
+  </ol>
+
+  <div class="callout">
+    <p class="eyebrow">Honest about the threshold</p>
+    <p>
+      1,500 characters was chosen from the corpus's own length distribution — median 434,
+      p90 730, max 6,660 — and not from any measurement of whether retrieval actually
+      improves at that point. It is a reasoned starting value awaiting an eval harness
+      that does not exist yet. Same for the 1,200-character chunk size and the
+      similarity floor further down.
+    </p>
+  </div>
+</section>
+
+<section class="col">
+  <h2>Where the vectors live</h2>
+  <p>
+    Embedding is a network call, and 606 of them take a couple of minutes. Doing that per
+    search would be absurd, so it happens once, in a build step, and the result is
+    committed to the repository:
+  </p>
+  <div class="formula">pnpm run build:vectors</div>
+  <p>
+    Which raises the storage question. 930,816 floating point numbers written as JSON
+    text — <code>0.005010511167347431,</code> and so on — is more than 10 MB of digits,
+    and every one of them has to be parsed back into a number on startup. Instead the
+    whole block is packed as raw Float32 and base64-encoded.
+  </p>
+
+  <ol class="steps">
+    <li><div class="step-body">
+      <strong>4 bytes per number, not ~20 characters.</strong>
+      <div class="calc">606 × 1,536 × 4 bytes = 3,723,264 bytes  →  base64 ≈ 4.96 MB  →  file 4.99 MB</div>
+    </div></li>
+    <li><div class="step-body">
+      <strong>One decode, not a million parses.</strong> <code>Buffer.from(…, "base64")</code>
+      then a single <code>Float32Array</code> view over the bytes.
+    </div></li>
+    <li><div class="step-body">
+      <strong>A header that makes staleness loud.</strong> The file records the model, the
+      dimension count, and a SHA-256 fingerprint of the exact texts that were embedded.
+      Loading recomputes the fingerprint from the current corpus and throws if it differs.
+      <div class="calc">Vector artifact is stale: it was built with fingerprint 4a91c0…, corpus is 8fd233….
+Run `pnpm run build:vectors`.</div>
+    </div></li>
+  </ol>
+
+  <p>
+    That last one is the difference between a bug you find and a bug you don't. Edit an
+    email, forget to rebuild, and without the check search keeps working — quietly
+    ranking against vectors for text that no longer exists. The fingerprint covers the
+    embedded <em>texts</em>, not just the corpus file, so changing the chunking policy
+    invalidates it too.
+  </p>
+</section>
+
+<section class="col">
+  <h2>Searching: no index at all</h2>
+  <p>
+    BM25 needs an inverted index because scanning every document for every query term
+    would be hopeless. The semantic ranker has no such structure. It compares the query
+    to <em>every single vector</em>, in order, and sorts.
+  </p>
+  <div class="formula">463 vectors × 1,536 dimensions = <span class="t-tf">711,168 multiply-adds</span> <span class="anno">— well under a millisecond</span></div>
+  <p>
+    This is a deliberate non-decision. Approximate-nearest-neighbour indexes and vector
+    databases exist to make this tractable at millions of vectors; at a few hundred they
+    would add an operational dependency and approximation error to a scan that is already
+    exact and instant. The rule of thumb we wrote down: revisit if the corpus grows by two
+    orders of magnitude.
+  </p>
+
+  <h3>Why 463 and not 606</h3>
+  <p>
+    143 of the 606 chunks are byte-identical to another one. This corpus is somebody's
+    real inbox, and real inboxes are full of automated post: sixteen copies of
+    <em>Your monthly statement is ready</em>, fourteen of <em>Your Spotify Premium
+    receipt</em>, each a separate email with its own id and its own thread.
+  </p>
+  <p>
+    Identical text embeds to an identical vector, so indexed individually they score
+    identically and take the top sixteen slots <em>as a block</em>. Measured before this
+    was fixed: <code>mortgage pre-approval</code> returned seven identical bank
+    notifications in its top eight, with the two emails a person actually wanted at rank
+    five and below. Worse than the lexical ranker it replaced.
+  </p>
+  <p>
+    So the index holds one representative per distinct text. This is not a display
+    choice, and it is not deduplication of results — identical text should get
+    <strong>one vote, not sixteen</strong>. The duplicates stay fully findable through
+    BM25, which scores them on their own terms.
+  </p>
+</section>
+
+<section class="col">
+  <h2>The floor: when nothing is close enough</h2>
+  <p>
+    A cosine ranker always has an answer. Ask it about quantum chromodynamics and it will
+    dutifully return the <em>least unrelated</em> email in the archive, because something
+    always has the highest score. That would turn today's honest empty page into a page of
+    confident nonsense.
+  </p>
+  <p>
+    So results below a cosine floor are dropped. Here is what that floor is actually
+    filtering, measured over all 606 chunks.
+  </p>
+</section>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 7</span>
+    <p class="fig-title">Similarity distribution, real query vs. nonsense query</p>
+  </div>
+  <div class="fig-body" id="chart-hist"></div>
+  <div class="controls">
+    <div class="ctrl">
+      <label for="floor">COSINE FLOOR</label>
+      <input type="range" id="floor" min="0" max="0.6" step="0.01" value="0.3">
+      <output id="floor-out">0.30</output>
+    </div>
+    <div class="ctrl"><span class="keyline" id="floor-survivors"></span></div>
+  </div>
+  <div class="legend">
+    <span><i class="swatch solid-accent"></i> "when do I need to hand over the remaining money…"</span>
+    <span><i class="swatch solid-teal"></i> "zzzzqqqxyzzy"</span>
+  </div>
+  <figcaption>
+    The two distributions overlap almost entirely — which is the point. A nonsense query
+    still scores 0.13 against the median email, because <em>everything</em> is a little
+    bit like everything in embedding space. What separates a real query is not its bulk
+    but its <strong>tail</strong>: the conceptual query clears 0.3 on 17 chunks and peaks
+    at 0.387, while the nonsense query never gets above <strong>0.214</strong>. Drag the
+    floor and watch the teal series die completely while the pink one keeps its head.
+    0.3 is the value we shipped; it is a reasoned guess, not a measurement.
+  </figcaption>
+</figure>
+
+<section class="col">
+  <h2>Two rankers, two incomparable numbers</h2>
+  <p>
+    Now the actual difficulty. We have two rankers with opinions about the same query,
+    and their scores cannot be combined.
+  </p>
+</section>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 8</span>
+    <p class="fig-title">The same query, scored by both rankers</p>
+  </div>
+  <div class="fig-body">
+    <table>
+      <thead>
+        <tr><th></th><th>BM25F</th><th>Cosine</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Range</td><td>0 → unbounded</td><td>−1 → 1</td></tr>
+        <tr><td>Top score, this query</td><td class="tag">8.74</td><td class="tag-teal">0.387</td></tr>
+        <tr><td>Depends on</td><td>corpus size, term rarity, field weights</td><td>only the two texts</td></tr>
+        <tr><td>Meaning of "twice as big"</td><td>nothing in particular</td><td>nothing in particular</td></tr>
+        <tr><td>Comparable across queries</td><td>no</td><td>yes</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <figcaption>
+    Adding 8.74 to 0.387 is meaningless, and so is any weighted sum of them — the weight
+    would be doing all the work and would need retuning for every corpus. Normalising each
+    list to 0–1 per query is worse than it sounds: on a five-result list it manufactures a
+    "1.0" out of whatever happened to come first, however bad it was.
+  </figcaption>
+</figure>
+
+<section class="col">
+  <h2>Reciprocal Rank Fusion</h2>
+  <p>
+    The way out is to throw the scores away entirely and keep only what both rankers
+    agree on the meaning of: <em>position</em>. Being first means the same thing in both
+    lists.
+  </p>
+
+  <div class="formula">
+    score(<em>id</em>) = Σ<sub>rankings</sub>&nbsp;
+    <span class="t-idf">1</span> / (<span class="t-len">k</span> + <span class="t-tf">rank(id)</span>)
+    &nbsp;&nbsp;<span class="anno">rank is 1-based · k = 60 · absent from a ranking contributes nothing</span>
+  </div>
+
+  <p>
+    That is the whole algorithm. Two properties fall out of it, and both are things we
+    actually want:
+  </p>
+  <ul class="plain">
+    <li><strong>Agreement wins.</strong> An email both rankers place mid-list beats an
+      email one ranker puts first, because two moderate contributions add up.</li>
+    <li><strong>A lone strong opinion still survives.</strong> A first place is worth
+      1/61 outright, enough to keep an obvious literal hit on the page even when the
+      semantic ranker has never heard of it.</li>
+  </ul>
+
+  <p>
+    <code>k</code> is the dial between them. It flattens the difference between adjacent
+    ranks — the bigger it is, the less a first place is worth relative to simply appearing
+    in both lists.
+  </p>
+</section>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 9</span>
+    <p class="fig-title">What a rank is worth, at a given k</p>
+  </div>
+  <div class="fig-body" id="chart-rrf"></div>
+  <div class="controls">
+    <div class="ctrl">
+      <label for="k">k</label>
+      <input type="range" id="k" min="0" max="120" step="1" value="60">
+      <output id="k-out">60</output>
+    </div>
+  </div>
+  <div class="legend">
+    <span><i class="swatch solid-accent"></i> 1 / (k + rank)</span>
+    <span><i class="swatch ghost"></i> two mid-list placements combined</span>
+  </div>
+  <figcaption>
+    At <strong>k = 0</strong> the curve is a cliff: first place is worth 1.0 and third
+    place 0.33, so position dominates and fusion is barely more than "whoever won
+    something". At <strong>k = 60</strong> the curve is nearly flat across the visible
+    ranks — first place 0.0164, tenth place 0.0143 — so what actually decides the order is
+    how many rankings found the document at all. That is the regime we want, and it is why
+    60 is the conventional default.
+  </figcaption>
+</figure>
+
+<section class="col">
+  <h2>Fusion, computed by hand</h2>
+  <p>
+    Real numbers, real query, the same one from Fig. 1. Both rankers are asked for 40
+    candidates; the semantic side clears its floor on 10 emails.
+  </p>
+
+  <ol class="steps">
+    <li><div class="step-body">
+      <strong>Exchange of Contracts</strong> — lexical rank 12, semantic rank 1.
+      <div class="calc">1/(60+12) + 1/(60+1) = 0.013889 + 0.016393 = <b>0.030282</b></div>
+    </div></li>
+    <li><div class="step-body">
+      <strong>Completion Confirmation</strong> — lexical rank 20, semantic rank 2.
+      <div class="calc">1/(60+20) + 1/(60+2) = 0.012500 + 0.016129 = <b>0.028629</b></div>
+    </div></li>
+    <li><div class="step-body">
+      <strong>Re: Training goals</strong> — lexical rank 1, absent from the semantic list.
+      <div class="calc">1/(60+1) + 0 = <b>0.016393</b></div>
+    </div></li>
+    <li><div class="step-body">
+      <strong>Re: Completion Confirmation</strong> — absent from the lexical top 40,
+      semantic rank 3.
+      <div class="calc">0 + 1/(60+3) = <b>0.015873</b></div>
+    </div></li>
+  </ol>
+
+  <p>
+    Two mid-table lexical results, each endorsed by the semantic ranker, have overtaken
+    the lexical winner — while the lexical winner keeps a place on the page rather than
+    being deleted. Nothing about that ordering required knowing that 8.74 and 0.387 are
+    on different scales.
+  </p>
+</section>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 10</span>
+    <p class="fig-title">The real fused ranking — re-fused live at any k</p>
+  </div>
+  <div class="fig-body" id="fusion-table"></div>
+  <div class="controls">
+    <div class="ctrl">
+      <label for="k2">k</label>
+      <input type="range" id="k2" min="0" max="200" step="1" value="60">
+      <output id="k2-out">60</output>
+    </div>
+  </div>
+  <figcaption>
+    All 47 candidate emails for this query, with their true lexical and semantic
+    positions, re-fused in the browser as you move <code>k</code>. At
+    <strong>k = 0</strong> a single first place is worth 1.0 outright, so the lexical #1
+    — a climbing email — muscles into second, displacing a result both rankers agreed on.
+    By <strong>k = 20</strong> agreement has won and the conveyancing thread owns the top
+    three. Above that almost nothing moves: the ordering is not delicately balanced on
+    the exact value of 60, which is the main reason nobody tunes it.
+  </figcaption>
+</figure>
+
+<figure class="bleed">
+  <div class="fig-head">
+    <span class="fig-num">Fig. 11</span>
+    <p class="fig-title">Before and after, same query, same corpus</p>
+  </div>
+  <div class="fig-body">
+    <table>
+      <thead>
+        <tr><th class="n">#</th><th>Lexical only (shipped before)</th><th>Hybrid (shipped now)</th><th class="n">lex</th><th class="n">sem</th></tr>
+      </thead>
+      <tbody>
+        <tr><td class="n">1</td><td class="miss">Re: Training goals - 5.10 to 5.11</td><td>Exchange of Contracts - 42 Maple Grove</td><td class="n">12</td><td class="n">1</td></tr>
+        <tr><td class="n">2</td><td class="miss">Re: New Price Alert: Manchester to Auckland</td><td>Completion Confirmation - 24 Maple Grove</td><td class="n">20</td><td class="n">2</td></tr>
+        <tr><td class="n">3</td><td class="miss">Congratulations on your offer! 🏡</td><td>Offer Accepted - Chorlton Property 🏡</td><td class="n">23</td><td class="n">7</td></tr>
+        <tr><td class="n">4</td><td class="miss">Re: Workshop Testimonial Request</td><td class="miss">Re: Training goals - 5.10 to 5.11</td><td class="n">1</td><td class="n">—</td></tr>
+        <tr><td class="n">5</td><td class="miss">Re: Long time no chat! New Zealand trip?</td><td class="miss">Re: New Price Alert: Manchester to Auckland</td><td class="n">2</td><td class="n">—</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <figcaption>
+    The first three results now answer the question. The old first three are still on the
+    page, at 4 and 5 and 6 — fusion demotes, it does not delete, which is exactly the
+    property you want when the semantic ranker is wrong.
+  </figcaption>
+</figure>
+
+<section class="col">
+  <h2>What it must not break</h2>
+  <p>
+    Any change to relevance is a chance to make something that already worked worse. The
+    thing most at risk here is precision: an email address, an invoice number, a
+    distinctive surname. Those should land exactly, and semantics has nothing to
+    contribute to them.
+  </p>
+  <p>
+    Measured: the query <code>david.xu@firsthomemortgages.co.uk</code> scores above 0.3
+    against <strong>124 of 606 chunks</strong>. The embedding model can tell that the
+    string is a mortgage-adviser's address, and so it gently likes every mortgage email in
+    the archive — which is precisely the wrong behaviour for an identifier lookup.
+  </p>
+  <p>
+    It does no damage, because BM25 still ranks that address first and RRF respects that
+    first place. The regression test asserting it is not a formality; it is the guard on
+    the one thing this feature could plausibly have cost us.
+  </p>
+
+  <div class="callout">
+    <p class="eyebrow">Degrading, not breaking</p>
+    <p>
+      If the embedding provider is down, or the API key is missing, the query path logs a
+      warning and drops the semantic leg. Fusion then runs over a single ranking, which
+      reproduces the lexical order exactly. Search gets worse; the page does not break. It
+      is an explicit <code>catch</code>, not an accident — and it has its own test.
+    </p>
+  </div>
+</section>
+
+<section class="col">
+  <h2>What it cannot do</h2>
+  <ul class="plain">
+    <li><strong>Answer instantly.</strong> Every search now embeds the query over the
+      network first — roughly 100–400 ms added to something that took single-digit
+      milliseconds. Fine for a server-rendered page. If this ever becomes
+      search-as-you-type, this number becomes the whole problem, and the fixes are
+      debouncing, caching query vectors, or rendering lexical results immediately and
+      folding semantic ones in when they land.</li>
+    <li><strong>Know about anything added since the last build.</strong> The vectors are
+      a committed artifact. A new email is lexically searchable immediately and
+      semantically invisible until someone runs <code>pnpm run build:vectors</code>.</li>
+    <li><strong>Explain itself.</strong> The UI shows a ranked list and nothing else — no
+      score, no indication of whether an email surfaced lexically, semantically, or both.
+      Deliberately out of scope, and the first thing to add if the ranking ever looks
+      wrong to a user.</li>
+    <li><strong>Guarantee thread diversity.</strong> Chunks collapse to their best per
+      email, so no single email can flood the page. Nothing stops six <em>different</em>
+      emails from one conversation doing it. Quote stripping makes this much rarer;
+      it does not make it impossible.</li>
+    <li><strong>Tell you whether any of this is tuned.</strong> The cosine floor of 0.3,
+      the RRF constant of 60, the 1,500-character chunk threshold, and the field weights
+      inherited from BM25 are all reasoned starting points. Nothing here measures
+      relevance. <code>evalite</code> is installed with zero suites, and until it has
+      some, "better" is an argument rather than a number.</li>
+  </ul>
+</section>
+
+<section class="col">
+  <h2>The shape of the whole thing</h2>
+  <ol class="steps">
+    <li><div class="step-body"><strong>Build time.</strong> 547 emails → strip quotes,
+      prepend subjects, split the long ones → 606 texts → one API call per 128 → 606
+      normalised vectors → packed base64 + fingerprint → <code>data/email-vectors.json</code>.</div></li>
+    <li><div class="step-body"><strong>Process start.</strong> Read the artifact once,
+      validate its header against the live corpus, drop duplicate texts, decode into one
+      flat <code>Float32Array</code>. Same memoisation as the BM25 index. A stale header
+      throws here rather than degrading quietly.</div></li>
+    <li><div class="step-body"><strong>Per query.</strong> BM25F over the inverted index
+      → 40 ids. In parallel conceptually, embed the query → 711,168 multiply-adds → apply
+      the 0.3 floor → collapse chunks to emails → at most 50 ids.</div></li>
+    <li><div class="step-body"><strong>Fuse.</strong> Two id lists in, one ranked list
+      out, by rank arithmetic alone. Slice to the page size. Hand back emails.</div></li>
+  </ol>
+  <p>
+    The lexical ranker did not change. The tokenizer did not change. The search page
+    gained one <code>await</code>. Everything new landed behind the adapter seam that the
+    BM25 work put there in the first place — which was the point of building it that way.
+  </p>
+</section>
+
+<footer class="col">
+  <p>
+    Every number in this document is computed from the committed artifacts —
+    <code>data/emails.json</code>, <code>data/email-vectors.json</code>,
+    <code>data/query-vectors.json</code> — and the real ranker code in
+    <code>src/lib/search/</code>. Nothing is illustrative.
+  </p>
+  <p>
+    Implementation: <code>semantic.ts</code> · <code>rrf.ts</code> ·
+    <code>embedder.ts</code> · <code>email-chunks.ts</code> ·
+    <code>vector-artifact.ts</code> · <code>emails.ts</code>.
+    Design notes: <code>docs/hybrid-search.md</code>. Lexical half:
+    <a href="./bm25-explained.html">Inside BM25</a>.
+  </p>
+</footer>
+
+</main>
+
+<script>
+  (function () {
+    "use strict";
+
+    var PROJECTION = [{"arc":"house_purchase","p":[-0.243,0]},{"arc":"house_purchase","p":[-0.217,-0.235]},{"arc":"house_purchase","p":[-0.249,0.067]},{"arc":"house_purchase","p":[-0.22,0.008]},{"arc":"house_purchase","p":[-0.224,0.209]},{"arc":"house_purchase","p":[-0.23,0.164]},{"arc":"house_purchase","p":[-0.214,0.197]},{"arc":"house_purchase","p":[-0.234,0.241]},{"arc":"house_purchase","p":[-0.18,-0.001]},{"arc":"house_purchase","p":[-0.225,0.033]},{"arc":"house_purchase","p":[-0.214,0.107]},{"arc":"house_purchase","p":[-0.126,-0.036]},{"arc":"house_purchase","p":[-0.086,0.186]},{"arc":"house_purchase","p":[0.104,0.018]},{"arc":"house_purchase","p":[-0.322,0.192]},{"arc":"house_purchase","p":[-0.234,0.154]},{"arc":"house_purchase","p":[-0.207,0.1]},{"arc":"house_purchase","p":[-0.256,0.253]},{"arc":"house_purchase","p":[-0.248,0.161]},{"arc":"house_purchase","p":[-0.258,0.266]},{"arc":"house_purchase","p":[-0.034,-0.028]},{"arc":"house_purchase","p":[-0.047,0.103]},{"arc":"house_purchase","p":[-0.151,0.139]},{"arc":"house_purchase","p":[-0.137,0.105]},{"arc":"house_purchase","p":[-0.222,0.292]},{"arc":"house_purchase","p":[-0.167,0.144]},{"arc":"house_purchase","p":[-0.026,0.129]},{"arc":"house_purchase","p":[0.009,0.035]},{"arc":"house_purchase","p":[-0.284,0.281]},{"arc":"house_purchase","p":[-0.294,0.14]},{"arc":"house_purchase","p":[-0.234,0.277]},{"arc":"house_purchase","p":[-0.106,0.222]},{"arc":"house_purchase","p":[-0.19,0.147]},{"arc":"house_purchase","p":[-0.191,0.218]},{"arc":"house_purchase","p":[-0.095,0.118]},{"arc":"house_purchase","p":[-0.307,0.198]},{"arc":"house_purchase","p":[-0.345,0.301]},{"arc":"house_purchase","p":[-0.282,0.217]},{"arc":"house_purchase","p":[-0.283,0.244]},{"arc":"house_purchase","p":[-0.294,0.279]},{"arc":"house_purchase","p":[-0.281,0.231]},{"arc":"house_purchase","p":[-0.329,0.219]},{"arc":"house_purchase","p":[-0.31,0.26]},{"arc":"house_purchase","p":[-0.275,0.253]},{"arc":"house_purchase","p":[-0.344,0.269]},{"arc":"house_purchase","p":[-0.289,0.168]},{"arc":"house_purchase","p":[-0.071,0.231]},{"arc":"house_purchase","p":[0.009,0.116]},{"arc":"house_purchase","p":[-0.115,0.246]},{"arc":"house_purchase","p":[-0.031,0.104]},{"arc":"house_purchase","p":[-0.313,0.224]},{"arc":"house_purchase","p":[-0.257,0.111]},{"arc":"house_purchase","p":[-0.25,0.111]},{"arc":"house_purchase","p":[-0.149,0.054]},{"arc":"house_purchase","p":[-0.128,0.035]},{"arc":"house_purchase","p":[-0.177,0.145]},{"arc":"house_purchase","p":[-0.331,0.208]},{"arc":"house_purchase","p":[-0.27,0.184]},{"arc":"house_purchase","p":[-0.255,0.2]},{"arc":"house_purchase","p":[-0.234,0.311]},{"arc":"house_purchase","p":[-0.177,0.324]},{"arc":"house_purchase","p":[-0.245,0.318]},{"arc":"house_purchase","p":[-0.261,0.317]},{"arc":"house_purchase","p":[-0.265,0.305]},{"arc":"house_purchase","p":[-0.218,0.187]},{"arc":"house_purchase","p":[-0.234,0.228]},{"arc":"house_purchase","p":[-0.065,0.079]},{"arc":"house_purchase","p":[-0.095,0.226]},{"arc":"house_purchase","p":[-0.038,0.233]},{"arc":"house_purchase","p":[-0.293,0.221]},{"arc":"house_purchase","p":[-0.255,0.115]},{"arc":"house_purchase","p":[-0.345,0.203]},{"arc":"house_purchase","p":[-0.273,0.14]},{"arc":"house_purchase","p":[-0.287,0.154]},{"arc":"house_purchase","p":[-0.287,0.341]},{"arc":"house_purchase","p":[-0.274,0.34]},{"arc":"house_purchase","p":[-0.254,0.37]},{"arc":"house_purchase","p":[-0.271,0.41]},{"arc":"house_purchase","p":[-0.285,0.355]},{"arc":"house_purchase","p":[-0.255,0.275]},{"arc":"house_purchase","p":[-0.232,0.252]},{"arc":"house_purchase","p":[-0.204,0.24]},{"arc":"house_purchase","p":[-0.198,0.278]},{"arc":"house_purchase","p":[-0.08,0.22]},{"arc":"house_purchase","p":[-0.194,0.235]},{"arc":"house_purchase","p":[0.07,0.017]},{"arc":"house_purchase","p":[0.123,0.019]},{"arc":"house_purchase","p":[-0.035,0.116]},{"arc":"house_purchase","p":[-0.213,0.294]},{"arc":"house_purchase","p":[-0.183,0.213]},{"arc":"house_purchase","p":[-0.03,0.05]},{"arc":"house_purchase","p":[-0.204,0.215]},{"arc":"house_purchase","p":[-0.011,0.168]},{"arc":"house_purchase","p":[-0.253,0.282]},{"arc":"house_purchase","p":[-0.118,0.125]},{"arc":"consulting_growth","p":[-0.252,-0.378]},{"arc":"consulting_growth","p":[-0.209,-0.357]},{"arc":"consulting_growth","p":[-0.188,-0.355]},{"arc":"consulting_growth","p":[-0.208,-0.394]},{"arc":"consulting_growth","p":[-0.219,-0.363]},{"arc":"consulting_growth","p":[-0.224,-0.355]},{"arc":"consulting_growth","p":[-0.21,-0.365]},{"arc":"consulting_growth","p":[-0.194,-0.338]},{"arc":"consulting_growth","p":[-0.165,-0.316]},{"arc":"consulting_growth","p":[-0.162,-0.258]},{"arc":"consulting_growth","p":[-0.236,-0.363]},{"arc":"consulting_growth","p":[-0.185,-0.367]},{"arc":"consulting_growth","p":[-0.163,-0.281]},{"arc":"consulting_growth","p":[-0.193,-0.329]},{"arc":"consulting_growth","p":[-0.11,-0.263]},{"arc":"consulting_growth","p":[-0.178,-0.313]},{"arc":"consulting_growth","p":[-0.149,-0.328]},{"arc":"consulting_growth","p":[-0.231,-0.287]},{"arc":"consulting_growth","p":[-0.143,-0.301]},{"arc":"consulting_growth","p":[-0.198,-0.29]},{"arc":"consulting_growth","p":[-0.137,-0.24]},{"arc":"consulting_growth","p":[-0.054,-0.287]},{"arc":"consulting_growth","p":[-0.063,-0.361]},{"arc":"consulting_growth","p":[-0.049,-0.308]},{"arc":"consulting_growth","p":[-0.11,-0.357]},{"arc":"consulting_growth","p":[-0.049,-0.354]},{"arc":"consulting_growth","p":[-0.022,-0.318]},{"arc":"consulting_growth","p":[-0.15,-0.395]},{"arc":"consulting_growth","p":[-0.145,-0.331]},{"arc":"consulting_growth","p":[-0.103,-0.245]},{"arc":"consulting_growth","p":[-0.125,-0.36]},{"arc":"consulting_growth","p":[-0.132,-0.378]},{"arc":"consulting_growth","p":[-0.258,-0.341]},{"arc":"consulting_growth","p":[-0.229,-0.325]},{"arc":"consulting_growth","p":[-0.23,-0.299]},{"arc":"consulting_growth","p":[0.022,-0.352]},{"arc":"consulting_growth","p":[0.082,-0.306]},{"arc":"consulting_growth","p":[0.109,-0.184]},{"arc":"consulting_growth","p":[-0.144,-0.369]},{"arc":"consulting_growth","p":[-0.087,-0.395]},{"arc":"consulting_growth","p":[-0.149,-0.243]},{"arc":"consulting_growth","p":[-0.082,-0.192]},{"arc":"consulting_growth","p":[-0.071,-0.213]},{"arc":"consulting_growth","p":[-0.137,-0.23]},{"arc":"consulting_growth","p":[-0.11,-0.29]},{"arc":"consulting_growth","p":[-0.13,-0.289]},{"arc":"consulting_growth","p":[-0.081,-0.316]},{"arc":"consulting_growth","p":[-0.136,-0.364]},{"arc":"consulting_growth","p":[-0.088,-0.291]},{"arc":"consulting_growth","p":[-0.006,-0.305]},{"arc":"consulting_growth","p":[-0.178,0.08]},{"arc":"consulting_growth","p":[-0.013,0.025]},{"arc":"consulting_growth","p":[-0.026,-0.023]},{"arc":"consulting_growth","p":[-0.264,-0.315]},{"arc":"consulting_growth","p":[-0.249,-0.234]},{"arc":"consulting_growth","p":[-0.26,-0.236]},{"arc":"consulting_growth","p":[-0.293,-0.295]},{"arc":"consulting_growth","p":[-0.274,-0.293]},{"arc":"consulting_growth","p":[-0.274,-0.265]},{"arc":"consulting_growth","p":[-0.253,-0.281]},{"arc":"consulting_growth","p":[-0.242,-0.334]},{"arc":"consulting_growth","p":[-0.286,-0.319]},{"arc":"consulting_growth","p":[-0.246,-0.263]},{"arc":"consulting_growth","p":[-0.28,-0.205]},{"arc":"consulting_growth","p":[-0.276,-0.223]},{"arc":"consulting_growth","p":[-0.27,-0.223]},{"arc":"consulting_growth","p":[-0.268,-0.249]},{"arc":"consulting_growth","p":[-0.263,-0.25]},{"arc":"consulting_growth","p":[-0.256,-0.38]},{"arc":"consulting_growth","p":[-0.194,-0.356]},{"arc":"consulting_growth","p":[-0.216,-0.285]},{"arc":"consulting_growth","p":[-0.243,-0.301]},{"arc":"consulting_growth","p":[-0.222,-0.387]},{"arc":"consulting_growth","p":[-0.157,-0.356]},{"arc":"consulting_growth","p":[-0.184,-0.367]},{"arc":"consulting_growth","p":[-0.104,-0.265]},{"arc":"consulting_growth","p":[-0.084,-0.27]},{"arc":"consulting_growth","p":[-0.11,-0.421]},{"arc":"consulting_growth","p":[-0.068,-0.343]},{"arc":"consulting_growth","p":[-0.19,-0.285]},{"arc":"consulting_growth","p":[-0.216,-0.308]},{"arc":"consulting_growth","p":[-0.218,-0.333]},{"arc":"consulting_growth","p":[-0.217,-0.37]},{"arc":"consulting_growth","p":[-0.25,-0.315]},{"arc":"consulting_growth","p":[-0.025,-0.364]},{"arc":"consulting_growth","p":[-0.18,-0.321]},{"arc":"consulting_growth","p":[-0.175,-0.327]},{"arc":"consulting_growth","p":[-0.253,-0.324]},{"arc":"consulting_growth","p":[-0.215,-0.4]},{"arc":"consulting_growth","p":[-0.207,-0.331]},{"arc":"consulting_growth","p":[-0.05,-0.411]},{"arc":"consulting_growth","p":[-0.053,-0.436]},{"arc":"consulting_growth","p":[-0.069,-0.354]},{"arc":"consulting_growth","p":[0.019,-0.345]},{"arc":"consulting_growth","p":[-0.002,-0.328]},{"arc":"consulting_growth","p":[0.034,-0.32]},{"arc":"new_zealand_trip","p":[0.423,0.015]},{"arc":"new_zealand_trip","p":[0.454,0.039]},{"arc":"new_zealand_trip","p":[0.362,-0.148]},{"arc":"new_zealand_trip","p":[0.412,-0.117]},{"arc":"new_zealand_trip","p":[0.496,-0.063]},{"arc":"new_zealand_trip","p":[0.559,0.125]},{"arc":"new_zealand_trip","p":[0.59,0.156]},{"arc":"new_zealand_trip","p":[0.555,0.184]},{"arc":"new_zealand_trip","p":[0.565,0.189]},{"arc":"new_zealand_trip","p":[0.513,0.147]},{"arc":"new_zealand_trip","p":[0.463,-0.024]},{"arc":"new_zealand_trip","p":[0.471,0.029]},{"arc":"new_zealand_trip","p":[0.436,0.075]},{"arc":"new_zealand_trip","p":[0.387,0.046]},{"arc":"new_zealand_trip","p":[0.416,0.086]},{"arc":"new_zealand_trip","p":[0.12,0.214]},{"arc":"new_zealand_trip","p":[0.114,0.14]},{"arc":"new_zealand_trip","p":[0.198,0.199]},{"arc":"new_zealand_trip","p":[0.366,0.099]},{"arc":"new_zealand_trip","p":[0.395,0.074]},{"arc":"new_zealand_trip","p":[0.283,0.049]},{"arc":"new_zealand_trip","p":[0.186,0.292]},{"arc":"new_zealand_trip","p":[0.225,0.201]},{"arc":"new_zealand_trip","p":[0.186,0.257]},{"arc":"new_zealand_trip","p":[0.515,-0.044]},{"arc":"new_zealand_trip","p":[0.47,-0.062]},{"arc":"new_zealand_trip","p":[0.529,-0.001]},{"arc":"new_zealand_trip","p":[0.385,0.078]},{"arc":"new_zealand_trip","p":[0.42,0.047]},{"arc":"new_zealand_trip","p":[0.46,0.101]},{"arc":"new_zealand_trip","p":[0.429,0.083]},{"arc":"new_zealand_trip","p":[0.424,0.023]},{"arc":"new_zealand_trip","p":[0.406,0.021]},{"arc":"new_zealand_trip","p":[0.48,-0.023]},{"arc":"new_zealand_trip","p":[0.477,-0.063]},{"arc":"new_zealand_trip","p":[0.508,-0.011]},{"arc":"new_zealand_trip","p":[0.28,0.214]},{"arc":"new_zealand_trip","p":[0.341,0.204]},{"arc":"new_zealand_trip","p":[0.36,0.192]},{"arc":"new_zealand_trip","p":[0.393,0.199]},{"arc":"new_zealand_trip","p":[0.327,0.205]},{"arc":"new_zealand_trip","p":[0.292,0.188]},{"arc":"new_zealand_trip","p":[0.275,0.184]},{"arc":"new_zealand_trip","p":[0.342,0.13]},{"arc":"new_zealand_trip","p":[0.406,0.143]},{"arc":"new_zealand_trip","p":[0.424,-0.051]},{"arc":"new_zealand_trip","p":[0.506,-0.001]},{"arc":"new_zealand_trip","p":[0.084,0.295]},{"arc":"new_zealand_trip","p":[0.43,-0.009]},{"arc":"new_zealand_trip","p":[0.263,0.186]},{"arc":"new_zealand_trip","p":[0.13,0.252]},{"arc":"new_zealand_trip","p":[0.444,0.092]},{"arc":"new_zealand_trip","p":[0.418,0.08]},{"arc":"new_zealand_trip","p":[0.332,0.06]},{"arc":"new_zealand_trip","p":[0.435,0.142]},{"arc":"new_zealand_trip","p":[0.388,0.066]},{"arc":"new_zealand_trip","p":[0.404,0.158]},{"arc":"new_zealand_trip","p":[-0.135,0.206]},{"arc":"new_zealand_trip","p":[-0.119,0.078]},{"arc":"new_zealand_trip","p":[-0.063,0.053]},{"arc":"new_zealand_trip","p":[0.434,-0.116]},{"arc":"new_zealand_trip","p":[0.478,-0.101]},{"arc":"new_zealand_trip","p":[0.456,-0.14]},{"arc":"new_zealand_trip","p":[0.126,-0.209]},{"arc":"new_zealand_trip","p":[0.111,-0.233]},{"arc":"new_zealand_trip","p":[0.197,-0.109]},{"arc":"new_zealand_trip","p":[0.469,0.019]},{"arc":"new_zealand_trip","p":[0.427,0.014]},{"arc":"new_zealand_trip","p":[0.406,0.025]},{"arc":"new_zealand_trip","p":[0.444,-0.027]},{"arc":"new_zealand_trip","p":[0.457,0.01]},{"arc":"wedding_planning","p":[-0.038,-0.016]},{"arc":"wedding_planning","p":[0.017,0.042]},{"arc":"wedding_planning","p":[-0.059,-0.131]},{"arc":"wedding_planning","p":[-0.041,-0.052]},{"arc":"wedding_planning","p":[-0.019,-0.028]},{"arc":"wedding_planning","p":[-0.054,0.024]},{"arc":"wedding_planning","p":[-0.055,0.026]},{"arc":"wedding_planning","p":[-0.03,0.134]},{"arc":"wedding_planning","p":[-0.07,-0.045]},{"arc":"wedding_planning","p":[-0.013,-0.081]},{"arc":"wedding_planning","p":[-0.004,-0.036]},{"arc":"wedding_planning","p":[-0.225,0.238]},{"arc":"wedding_planning","p":[-0.152,0.132]},{"arc":"wedding_planning","p":[-0.175,0.203]},{"arc":"wedding_planning","p":[-0.187,0.302]},{"arc":"wedding_planning","p":[-0.139,0.311]},{"arc":"wedding_planning","p":[-0.168,0.327]},{"arc":"wedding_planning","p":[-0.152,0.253]},{"arc":"wedding_planning","p":[-0.192,0.247]},{"arc":"wedding_planning","p":[-0.172,0.336]},{"arc":"wedding_planning","p":[-0.16,0.145]},{"arc":"wedding_planning","p":[-0.127,0.109]},{"arc":"wedding_planning","p":[-0.182,-0.073]},{"arc":"wedding_planning","p":[-0.154,-0.04]},{"arc":"wedding_planning","p":[-0.154,-0.077]},{"arc":"wedding_planning","p":[-0.156,-0.093]},{"arc":"wedding_planning","p":[-0.16,-0.09]},{"arc":"wedding_planning","p":[-0.111,-0.161]},{"arc":"wedding_planning","p":[-0.062,0.097]},{"arc":"wedding_planning","p":[-0.059,0.063]},{"arc":"wedding_planning","p":[-0.004,0.09]},{"arc":"wedding_planning","p":[-0.073,-0.025]},{"arc":"wedding_planning","p":[-0.02,-0.079]},{"arc":"wedding_planning","p":[0.004,-0.011]},{"arc":"wedding_planning","p":[-0.086,-0.077]},{"arc":"wedding_planning","p":[-0.005,-0.084]},{"arc":"wedding_planning","p":[-0.201,0.163]},{"arc":"wedding_planning","p":[-0.187,0.23]},{"arc":"wedding_planning","p":[-0.148,0.218]},{"arc":"wedding_planning","p":[-0.128,0.247]},{"arc":"wedding_planning","p":[-0.156,0.246]},{"arc":"wedding_planning","p":[-0.159,0.146]},{"arc":"wedding_planning","p":[-0.168,0.105]},{"arc":"wedding_planning","p":[-0.104,0.07]},{"arc":"wedding_planning","p":[-0.081,0.091]},{"arc":"wedding_planning","p":[-0.17,0.266]},{"arc":"wedding_planning","p":[-0.119,0.265]},{"arc":"wedding_planning","p":[-0.12,0.254]},{"arc":"wedding_planning","p":[-0.137,0.23]},{"arc":"wedding_planning","p":[-0.137,0.125]},{"arc":"wedding_planning","p":[-0.099,0.111]},{"arc":"wedding_planning","p":[-0.136,0.119]},{"arc":"wedding_planning","p":[-0.074,0.218]},{"arc":"wedding_planning","p":[-0.055,0.253]},{"arc":"wedding_planning","p":[-0.057,0.166]},{"arc":"wedding_planning","p":[-0.008,0.066]},{"arc":"wedding_planning","p":[-0.09,0.115]},{"arc":"wedding_planning","p":[-0.207,0.2]},{"arc":"wedding_planning","p":[-0.125,0.146]},{"arc":"wedding_planning","p":[-0.039,0.073]},{"arc":"wedding_planning","p":[-0.022,0.184]},{"arc":"wedding_planning","p":[-0.183,0.054]},{"arc":"wedding_planning","p":[-0.02,0.09]},{"arc":"wedding_planning","p":[0.008,0.108]},{"arc":"wedding_planning","p":[-0.146,0.018]},{"arc":"wedding_planning","p":[-0.086,0.036]},{"arc":"wedding_planning","p":[-0.074,0.082]},{"arc":"wedding_planning","p":[0.065,-0.025]},{"arc":"wedding_planning","p":[0.067,0.02]},{"arc":"wedding_planning","p":[-0.031,-0.145]},{"arc":"wedding_planning","p":[0.097,0.032]},{"arc":"wedding_planning","p":[0.035,-0.159]},{"arc":"wedding_planning","p":[0.09,-0.125]},{"arc":"wedding_planning","p":[-0.004,0.209]},{"arc":"wedding_planning","p":[-0.076,0.238]},{"arc":"wedding_planning","p":[-0.041,0.239]},{"arc":"wedding_planning","p":[-0.006,0.214]},{"arc":"wedding_planning","p":[0.055,0.159]},{"arc":"wedding_planning","p":[0.089,0.203]},{"arc":"photography_exhibition","p":[-0.027,0.278]},{"arc":"photography_exhibition","p":[0.055,0.02]},{"arc":"photography_exhibition","p":[-0.034,0.044]},{"arc":"photography_exhibition","p":[0.029,0.076]},{"arc":"photography_exhibition","p":[-0.013,0.153]},{"arc":"photography_exhibition","p":[0.025,0.07]},{"arc":"photography_exhibition","p":[0.116,-0.04]},{"arc":"photography_exhibition","p":[0.078,-0.011]},{"arc":"photography_exhibition","p":[-0.1,0.208]},{"arc":"photography_exhibition","p":[-0.024,0.276]},{"arc":"photography_exhibition","p":[-0.001,0.173]},{"arc":"photography_exhibition","p":[-0.04,0.216]},{"arc":"photography_exhibition","p":[0.1,0.13]},{"arc":"photography_exhibition","p":[0.106,0.143]},{"arc":"photography_exhibition","p":[0.012,0.136]},{"arc":"photography_exhibition","p":[0.016,0.043]},{"arc":"photography_exhibition","p":[-0.04,0.037]},{"arc":"photography_exhibition","p":[-0.136,0.187]},{"arc":"photography_exhibition","p":[-0.032,0.079]},{"arc":"photography_exhibition","p":[-0.07,0.111]},{"arc":"photography_exhibition","p":[0.07,0.112]},{"arc":"photography_exhibition","p":[0.12,0.088]},{"arc":"photography_exhibition","p":[0.074,0.044]},{"arc":"photography_exhibition","p":[-0.09,0.256]},{"arc":"photography_exhibition","p":[-0.046,0.126]},{"arc":"photography_exhibition","p":[0.057,0.035]},{"arc":"photography_exhibition","p":[-0.049,0.109]},{"arc":"photography_exhibition","p":[-0.001,0.087]},{"arc":"photography_exhibition","p":[0.078,0.085]},{"arc":"photography_exhibition","p":[0.043,0.151]},{"arc":"photography_exhibition","p":[0.057,0.166]},{"arc":"photography_exhibition","p":[0.122,0.133]},{"arc":"photography_exhibition","p":[-0.06,0.003]},{"arc":"photography_exhibition","p":[-0.076,-0.083]},{"arc":"photography_exhibition","p":[-0.113,0.248]},{"arc":"photography_exhibition","p":[-0.031,0.239]},{"arc":"photography_exhibition","p":[-0.149,0.12]},{"arc":"photography_exhibition","p":[-0.076,0.227]},{"arc":"photography_exhibition","p":[-0.018,0.185]},{"arc":"photography_exhibition","p":[-0.115,0.141]},{"arc":"photography_exhibition","p":[-0.147,0.175]},{"arc":"photography_exhibition","p":[0.032,0.041]},{"arc":"photography_exhibition","p":[0.22,0.042]},{"arc":"photography_exhibition","p":[0.27,0.078]},{"arc":"photography_exhibition","p":[-0.126,0.155]},{"arc":"photography_exhibition","p":[-0.072,0.064]},{"arc":"photography_exhibition","p":[-0.089,0.019]},{"arc":"photography_exhibition","p":[0.062,0.112]},{"arc":"photography_exhibition","p":[0.084,0.061]},{"arc":"photography_exhibition","p":[0.087,0.094]},{"arc":"photography_exhibition","p":[0.065,-0.01]},{"arc":"photography_exhibition","p":[0.097,-0.2]},{"arc":"photography_exhibition","p":[0.065,-0.255]},{"arc":"climbing_progression","p":[0.224,-0.228]},{"arc":"climbing_progression","p":[0.183,-0.287]},{"arc":"climbing_progression","p":[0.296,-0.098]},{"arc":"climbing_progression","p":[0.297,-0.182]},{"arc":"climbing_progression","p":[0.317,-0.114]},{"arc":"climbing_progression","p":[0.131,-0.053]},{"arc":"climbing_progression","p":[0.167,-0.096]},{"arc":"climbing_progression","p":[0.158,-0.093]},{"arc":"climbing_progression","p":[0.219,-0.239]},{"arc":"climbing_progression","p":[0.256,-0.187]},{"arc":"climbing_progression","p":[0.209,-0.239]},{"arc":"climbing_progression","p":[0.217,-0.04]},{"arc":"climbing_progression","p":[0.193,-0.069]},{"arc":"climbing_progression","p":[0.253,-0.006]},{"arc":"climbing_progression","p":[0.321,-0.131]},{"arc":"climbing_progression","p":[0.289,-0.144]},{"arc":"climbing_progression","p":[0.32,-0.14]},{"arc":"climbing_progression","p":[0.064,-0.058]},{"arc":"climbing_progression","p":[-0.002,-0.193]},{"arc":"climbing_progression","p":[0.252,0.053]},{"arc":"climbing_progression","p":[0.271,-0.056]},{"arc":"climbing_progression","p":[0.223,-0.002]},{"arc":"climbing_progression","p":[0.291,-0.101]},{"arc":"climbing_progression","p":[0.367,-0.161]},{"arc":"climbing_progression","p":[0.279,0.002]},{"arc":"climbing_progression","p":[0.316,-0.044]},{"arc":"climbing_progression","p":[0.345,-0.043]},{"arc":"climbing_progression","p":[0.326,-0.091]},{"arc":"climbing_progression","p":[0.322,-0.116]},{"arc":"climbing_progression","p":[0.301,-0.105]},{"arc":"climbing_progression","p":[0.335,-0.136]},{"arc":"climbing_progression","p":[0.313,-0.043]},{"arc":"climbing_progression","p":[0.219,-0.013]},{"arc":"climbing_progression","p":[0.219,-0.029]},{"arc":"climbing_progression","p":[0.176,0.016]},{"arc":"climbing_progression","p":[0.234,-0.053]},{"arc":"climbing_progression","p":[0.462,-0.05]},{"arc":"climbing_progression","p":[0.485,-0.041]},{"arc":"climbing_progression","p":[0.577,0.078]},{"arc":"climbing_progression","p":[0.323,0.047]},{"arc":"climbing_progression","p":[0.453,0.038]},{"arc":"climbing_progression","p":[0.129,-0.092]},{"arc":"climbing_progression","p":[0.118,-0.223]},{"arc":"climbing_progression","p":[0.124,-0.16]},{"arc":"climbing_progression","p":[0.134,-0.259]},{"arc":"climbing_progression","p":[0.176,-0.306]},{"arc":"climbing_progression","p":[0.17,-0.193]},{"arc":"climbing_progression","p":[0.329,-0.021]},{"arc":"climbing_progression","p":[0.414,-0.048]},{"arc":"climbing_progression","p":[0.436,0.013]},{"arc":"climbing_progression","p":[0.211,-0.072]},{"arc":"climbing_progression","p":[0.283,-0.128]},{"arc":"climbing_progression","p":[0.262,-0.018]},{"arc":"climbing_progression","p":[0.047,-0.14]},{"arc":"climbing_progression","p":[0.056,-0.068]},{"arc":"climbing_progression","p":[0.032,-0.101]}];
+    var QUERY_POINTS = [{"label":"\"…remaining money … pick up the keys\"","p":[-0.128,0.193]},{"label":"\"somewhere to hold the reception\"","p":[-0.091,0.23]},{"label":"\"what paperwork proves how much I earn\"","p":[-0.137,0.116]}];
+    var HIST = {"conceptual":[15,118,216,112,108,20,13,4,0,0,0,0,0,0,0,0,0,0,0,0],"nonsense":[8,121,276,198,3,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]};
+    var UNION = [{"s":"Re: Training goals - 5.10 to 5.11 progression","l":1,"v":0},{"s":"Re: New Price Alert: Manchester to Auckland","l":2,"v":0},{"s":"Congratulations on your offer! 🏡","l":3,"v":0},{"s":"Re: Workshop Testimonial Request - Advanced Technique Session","l":4,"v":0},{"s":"Re: Long time no chat! New Zealand trip?","l":5,"v":0},{"s":"Re: Your Recent Order - Custom Options Available","l":6,"v":0},{"s":"EPIC climb today - 5.11b clean send! 🧗‍♀️🎉","l":7,"v":0},{"s":"Re: Design System Audit Project - Kickoff & Initial Requirements","l":8,"v":0},{"s":"Re: Travel for your wedding - some questions","l":9,"v":0},{"s":"Re: Multi-pitch route planning - Peak District","l":10,"v":0},{"s":"Re: Mortgage Application - Required Documentation","l":11,"v":0},{"s":"Exchange of Contracts - 42 Maple Grove, Chorlton","l":12,"v":1},{"s":"Heard about the house hunting setback - sending love 💕","l":13,"v":0},{"s":"Sad to see you moving away!","l":14,"v":0},{"s":"Survey results for Chorlton house - thoughts?","l":15,"v":0},{"s":"Re: Awesome 5.11b send! Next challenges?","l":16,"v":0},{"s":"Design System Draft - Initial Feedback","l":17,"v":0},{"s":"Re: Maid of Honor Brainstorming 💕","l":18,"v":0},{"s":"OMG YOU BOUGHT A HOUSE!!!! 🏡🎉","l":19,"v":0},{"s":"Completion Confirmation - 24 Maple Grove","l":20,"v":2},{"s":"Travel for your wedding - some questions","l":21,"v":0},{"s":"Re: Quick coffee & career advice?","l":22,"v":0},{"s":"Offer Accepted - Chorlton Property 🏡","l":23,"v":7},{"s":"Re: NZ Trip Flights - Thoughts?","l":24,"v":0},{"s":"Re: Project Completion & Feedback - Design System Audit","l":25,"v":0},{"s":"Re: Wedding Ceremony Initial Consultation Follow-Up","l":26,"v":0},{"s":"Re: Chorlton Property - Seller's Counter-Offer","l":27,"v":0},{"s":"Re: Wedding DJ - an offer you can't refuse 😄","l":28,"v":0},{"s":"NZ Trip Flights - Thoughts?","l":29,"v":0},{"s":"Re: Out of Office Planning - New Zealand Trip","l":30,"v":0},{"s":"Best Man Duties 🤵 - What am I getting into?","l":31,"v":0},{"s":"Re: Just saw your latest climbing progress 💪","l":32,"v":0},{"s":"Design System Project - Check-in Meeting Schedule","l":33,"v":0},{"s":"Maid of Honor Brainstorming 💕","l":34,"v":0},{"s":"Re: Design Consultation Proposal - Acceptance","l":35,"v":0},{"s":"Re: New Zealand Photography Tips - Excited to Help!","l":36,"v":0},{"s":"Awesome 5.11b send! Next challenges?","l":37,"v":0},{"s":"Re: Awesome 5.11b send! Next challenges?","l":38,"v":0},{"s":"Help - I'm drowning 😫","l":39,"v":0},{"s":"Re: Potential Design Consulting Opportunity - Intro","l":40,"v":0},{"s":"Re: Completion Confirmation - 24 Maple Grove","l":0,"v":3},{"s":"Re: Conveyancing for 42 Sycamore Road - Next Steps","l":0,"v":4},{"s":"Re: Conveyancing for 42 Sycamore Road - Introduction and Next Steps","l":0,"v":5},{"s":"Re: Exchange of Contracts - 42 Maple Grove, Chorlton","l":0,"v":6},{"s":"Conveyancing for 42 Sycamore Road - Introduction and Next Steps","l":0,"v":8},{"s":"Re: Initial Mortgage Pre-Approval Consultation","l":0,"v":9},{"s":"Mortgage Application - Required Documentation","l":0,"v":10}];
+
+    var NS = "http://www.w3.org/2000/svg";
+
+    function el(tag, attrs) {
+      var node = document.createElementNS(NS, tag);
+      for (var key in attrs) {
+        if (attrs[key] !== null && attrs[key] !== undefined) {
+          node.setAttribute(key, attrs[key]);
+        }
+      }
+      return node;
+    }
+
+    function text(x, y, str, cls, anchor) {
+      var t = el("text", { x: x, y: y, class: cls, "text-anchor": anchor || "start" });
+      t.textContent = str;
+      return t;
+    }
+
+    function frame(opts) {
+      return el("svg", {
+        viewBox: "0 0 " + opts.w + " " + opts.h,
+        role: "img",
+        "aria-label": opts.label
+      });
+    }
+
+    /* ------------------------------------------------------------------ *
+     * Fig 3 — cosine as an angle
+     * ------------------------------------------------------------------ */
+    var cosHost = document.getElementById("chart-cos");
+    var angleInput = document.getElementById("angle");
+    var angleOut = document.getElementById("angle-out");
+
+    function drawCosine(degrees) {
+      var W = 900, H = 360, cx = 300, cy = 250, r = 170;
+      var svg = frame({ w: W, h: H, label: "Cosine similarity as the angle between two vectors" });
+
+      var i;
+      for (i = 0; i <= 4; i++) {
+        svg.appendChild(el("line", { x1: cx - r - 20, y1: cy - (i * r) / 4, x2: cx + r + 20, y2: cy - (i * r) / 4, class: "grid-line" }));
+      }
+      svg.appendChild(el("line", { x1: cx - r - 20, y1: cy, x2: cx + r + 30, y2: cy, class: "axis-line" }));
+      svg.appendChild(el("line", { x1: cx, y1: cy + 30, x2: cx, y2: cy - r - 30, class: "axis-line" }));
+
+      var rad = (degrees * Math.PI) / 180;
+
+      /* q along the x axis, d at the chosen angle */
+      svg.appendChild(el("line", { x1: cx, y1: cy, x2: cx + r, y2: cy, class: "vec-line" }));
+      svg.appendChild(text(cx + r + 8, cy + 4, "q", "val-label"));
+
+      var dx = cx + r * Math.cos(rad);
+      var dy = cy - r * Math.sin(rad);
+      svg.appendChild(el("line", { x1: cx, y1: cy, x2: dx, y2: dy, class: "vec-line-alt" }));
+      svg.appendChild(text(dx + 8, dy - 6, "d", "val-label"));
+
+      /* the arc between them */
+      var ar = 52;
+      var arc = "M " + (cx + ar) + " " + cy + " A " + ar + " " + ar + " 0 " +
+        (degrees > 180 ? 1 : 0) + " 0 " + (cx + ar * Math.cos(rad)) + " " + (cy - ar * Math.sin(rad));
+      svg.appendChild(el("path", { d: arc, class: "arc-line" }));
+      svg.appendChild(text(cx + 62, cy - 22, degrees + "°", "note-text"));
+
+      /* the projection of d onto q — the dot product itself */
+      var cos = Math.cos(rad);
+      svg.appendChild(el("line", { x1: dx, y1: dy, x2: cx + r * cos, y2: cy, class: "series-ghost" }));
+      svg.appendChild(el("circle", { cx: cx + r * cos, cy: cy, r: 4, class: "dot-main" }));
+
+      /* readout */
+      var bx = 620;
+      svg.appendChild(text(bx, 70, "COSINE SIMILARITY", "axis-label"));
+      var big = text(bx, 130, cos.toFixed(3), "val-label");
+      big.setAttribute("style", "font-size:46px");
+      svg.appendChild(big);
+
+      var lines = [
+        "q · d  =  Σ qᵢ · dᵢ",
+        "both are unit length,",
+        "so the dot product is",
+        "the cosine directly.",
+        "",
+        degrees === 0 ? "identical direction" :
+          degrees < 45 ? "clearly about the same thing" :
+          degrees < 80 ? "loosely related" :
+          degrees < 100 ? "unrelated" : "actively opposed"
+      ];
+      lines.forEach(function (line, index) {
+        svg.appendChild(text(bx, 180 + index * 22, line, "note-text"));
+      });
+
+      cosHost.replaceChildren(svg);
+    }
+
+    angleInput.addEventListener("input", function () {
+      var v = parseInt(angleInput.value, 10);
+      angleOut.textContent = v + "°";
+      drawCosine(v);
+    });
+    drawCosine(45);
+
+    /* ------------------------------------------------------------------ *
+     * Fig 4 — 2D projection of the corpus
+     * ------------------------------------------------------------------ */
+    var ARC_COLOUR = {
+      house_purchase: "var(--accent)",
+      wedding_planning: "var(--teal)",
+      consulting_growth: "var(--amber)",
+      new_zealand_trip: "#6E8B99",
+      climbing_progression: "#9A6BAF",
+      photography_exhibition: "#4E9A6B"
+    };
+
+    (function drawScatter() {
+      var host = document.getElementById("chart-scatter");
+      if (!PROJECTION.length) return;
+
+      var W = 900, H = 480, m = 40;
+      var svg = frame({ w: W, h: H, label: "Email vectors projected to two dimensions" });
+
+      var xs = PROJECTION.map(function (p) { return p.p[0]; });
+      var ys = PROJECTION.map(function (p) { return p.p[1]; });
+      QUERY_POINTS.forEach(function (q) { xs.push(q.p[0]); ys.push(q.p[1]); });
+
+      var xMin = Math.min.apply(null, xs), xMax = Math.max.apply(null, xs);
+      var yMin = Math.min.apply(null, ys), yMax = Math.max.apply(null, ys);
+      var px = function (x) { return m + ((x - xMin) / (xMax - xMin)) * (W - 2 * m); };
+      var py = function (y) { return H - m - ((y - yMin) / (yMax - yMin)) * (H - 2 * m); };
+
+      var i;
+      for (i = 0; i <= 6; i++) {
+        svg.appendChild(el("line", { x1: m, y1: m + (i * (H - 2 * m)) / 6, x2: W - m, y2: m + (i * (H - 2 * m)) / 6, class: "grid-line" }));
+        svg.appendChild(el("line", { x1: m + (i * (W - 2 * m)) / 6, y1: m, x2: m + (i * (W - 2 * m)) / 6, y2: H - m, class: "grid-line" }));
+      }
+
+      PROJECTION.forEach(function (point) {
+        svg.appendChild(el("circle", {
+          cx: px(point.p[0]), cy: py(point.p[1]), r: 4.2,
+          fill: ARC_COLOUR[point.arc] || "var(--muted)",
+          opacity: 0.62
+        }));
+      });
+
+      QUERY_POINTS.forEach(function (q) {
+        svg.appendChild(el("circle", { cx: px(q.p[0]), cy: py(q.p[1]), r: 7, fill: "var(--ink)" }));
+        svg.appendChild(el("circle", { cx: px(q.p[0]), cy: py(q.p[1]), r: 12, fill: "none", stroke: "var(--ink)", "stroke-width": 1, opacity: .5 }));
+        svg.appendChild(text(px(q.p[0]) + 16, py(q.p[1]) + 4, q.label, "note-text"));
+      });
+
+      svg.appendChild(text(m, H - 8, "PRINCIPAL COMPONENT 1 →", "axis-label"));
+      svg.appendChild(text(m, m - 14, "↑ PRINCIPAL COMPONENT 2", "axis-label"));
+
+      host.replaceChildren(svg);
+    })();
+
+    /* ------------------------------------------------------------------ *
+     * Fig 5 — similarity ladder
+     * ------------------------------------------------------------------ */
+    (function drawLadder() {
+      var host = document.getElementById("chart-ladder");
+      var rows = [
+        { label: "the same chunk", cos: 1.0, kind: "self" },
+        { label: "Exchange of Contracts — next chunk down", cos: 0.888, kind: "self" },
+        { label: "Exchange of Contracts — timeline chunk", cos: 0.835, kind: "self" },
+        { label: "Completion Confirmation — 24 Maple Grove", cos: 0.693, kind: "other" },
+        { label: "Re: Exchange of Contracts", cos: 0.668, kind: "other" },
+        { label: "Offer Accepted — Chorlton Property", cos: 0.627, kind: "other" },
+        { label: "Conveyancing for 42 Sycamore Road", cos: 0.597, kind: "other" },
+        { label: "Offer Submitted — Victorian Terrace", cos: 0.561, kind: "other" },
+        { label: "Discover Weekly is here", cos: 0.158, kind: "far" }
+      ];
+
+      var W = 900, H = 40 + rows.length * 34, ml = 330, mr = 60;
+      var svg = frame({ w: W, h: H, label: "Cosine similarity from one email to others" });
+      var px = function (v) { return ml + v * (W - ml - mr); };
+
+      var t;
+      for (t = 0; t <= 1; t += 0.25) {
+        svg.appendChild(el("line", { x1: px(t), y1: 18, x2: px(t), y2: H - 18, class: "grid-line" }));
+        svg.appendChild(text(px(t), H - 4, t.toFixed(2), "tick-text", "middle"));
+      }
+
+      rows.forEach(function (row, index) {
+        var y = 30 + index * 34;
+        svg.appendChild(text(ml - 12, y + 4, row.label, "bar-label", "end"));
+        svg.appendChild(el("rect", {
+          x: ml, y: y - 8, width: Math.max(1, px(row.cos) - ml), height: 17, rx: 2,
+          class: row.kind === "self" ? "bar-dim" : row.kind === "far" ? "bar-alt" : "bar-main"
+        }));
+        svg.appendChild(text(px(row.cos) + 8, y + 5, row.cos.toFixed(3), "val-label"));
+      });
+
+      host.replaceChildren(svg);
+    })();
+
+    /* ------------------------------------------------------------------ *
+     * Fig 7 — similarity histogram with a movable floor
+     * ------------------------------------------------------------------ */
+    var histHost = document.getElementById("chart-hist");
+    var floorInput = document.getElementById("floor");
+    var floorOut = document.getElementById("floor-out");
+    var floorNote = document.getElementById("floor-survivors");
+
+    /* buckets are 0.05 wide; a bucket survives when its lower edge is at or
+       above the floor, so the count is exact whenever the floor sits on a
+       bucket boundary — which the shipped 0.30 does. */
+    function isAbove(index, floor) {
+      return index * 0.05 >= floor - 1e-9;
+    }
+
+    function survivors(buckets, floor) {
+      var total = 0;
+      buckets.forEach(function (count, index) {
+        if (isAbove(index, floor)) total += count;
+      });
+      return total;
+    }
+
+    function drawHistogram(floor) {
+      var W = 900, H = 360, ml = 56, mr = 24, mt = 24, mb = 52;
+      var svg = frame({ w: W, h: H, label: "Distribution of cosine similarity across the corpus" });
+
+      var a = HIST.conceptual || [], b = HIST.nonsense || [];
+      var yMax = Math.max.apply(null, a.concat(b).concat([1]));
+      var bucketW = (W - ml - mr) / a.length;
+      var px = function (v) { return ml + (v / (a.length * 0.05)) * (W - ml - mr); };
+      var py = function (v) { return H - mb - (v / yMax) * (H - mt - mb); };
+
+      var g;
+      for (g = 0; g <= 4; g++) {
+        var value = (yMax / 4) * g;
+        svg.appendChild(el("line", { x1: ml, y1: py(value), x2: W - mr, y2: py(value), class: "grid-line" }));
+        svg.appendChild(text(ml - 10, py(value) + 4, Math.round(value), "tick-text", "end"));
+      }
+
+      a.forEach(function (count, index) {
+        var above = isAbove(index, floor);
+        svg.appendChild(el("rect", {
+          x: ml + index * bucketW + 1, y: py(count),
+          width: bucketW - 2, height: Math.max(0, H - mb - py(count)),
+          class: "bar-main", opacity: above ? 0.95 : 0.22
+        }));
+      });
+
+      b.forEach(function (count, index) {
+        if (!count) return;
+        var above = isAbove(index, floor);
+        svg.appendChild(el("rect", {
+          x: ml + index * bucketW + bucketW * 0.28, y: py(count),
+          width: bucketW * 0.44, height: Math.max(0, H - mb - py(count)),
+          class: "bar-alt", opacity: above ? 0.95 : 0.25
+        }));
+      });
+
+      svg.appendChild(el("line", { x1: px(floor), y1: mt - 6, x2: px(floor), y2: H - mb, class: "axis-line", "stroke-dasharray": "5 4" }));
+      svg.appendChild(text(px(floor) + 6, mt + 4, "floor " + floor.toFixed(2), "note-text"));
+
+      var tick;
+      for (tick = 0; tick <= 0.9; tick += 0.1) {
+        svg.appendChild(text(px(tick), H - mb + 20, tick.toFixed(1), "tick-text", "middle"));
+      }
+      svg.appendChild(el("line", { x1: ml, y1: H - mb, x2: W - mr, y2: H - mb, class: "axis-line" }));
+      svg.appendChild(text(ml, H - 8, "COSINE SIMILARITY →", "axis-label"));
+      svg.appendChild(text(ml - 44, mt - 6, "CHUNKS", "axis-label"));
+
+      histHost.replaceChildren(svg);
+
+      floorNote.textContent =
+        "surviving chunks — real query: " + survivors(a, floor) +
+        "   ·   nonsense: " + survivors(b, floor);
+    }
+
+    floorInput.addEventListener("input", function () {
+      var v = parseFloat(floorInput.value);
+      floorOut.textContent = v.toFixed(2);
+      drawHistogram(v);
+    });
+    drawHistogram(0.3);
+
+    /* ------------------------------------------------------------------ *
+     * Fig 9 — the value of a rank at a given k
+     * ------------------------------------------------------------------ */
+    var rrfHost = document.getElementById("chart-rrf");
+    var kInput = document.getElementById("k");
+    var kOut = document.getElementById("k-out");
+
+    function drawRRF(k) {
+      var W = 900, H = 380, ml = 76, mr = 24, mt = 24, mb = 52;
+      var svg = frame({ w: W, h: H, label: "Reciprocal rank contribution against rank" });
+
+      var maxRank = 20;
+      var yMax = k < 3 ? 1.05 : 1 / (k + 1) * 1.35;
+      var px = function (r) { return ml + ((r - 1) / (maxRank - 1)) * (W - ml - mr); };
+      var py = function (v) { return H - mb - (v / yMax) * (H - mt - mb); };
+
+      var g;
+      for (g = 0; g <= 4; g++) {
+        var value = (yMax / 4) * g;
+        svg.appendChild(el("line", { x1: ml, y1: py(value), x2: W - mr, y2: py(value), class: "grid-line" }));
+        svg.appendChild(text(ml - 10, py(value) + 4, value.toFixed(3), "tick-text", "end"));
+      }
+
+      var pts = [], r;
+      for (r = 1; r <= maxRank; r += 0.25) pts.push(px(r) + "," + py(1 / (k + r)));
+      svg.appendChild(el("polyline", { points: pts.join(" "), class: "series-main" }));
+
+      /* what two mid-list (rank 10) placements are worth, for comparison */
+      var pair = 2 / (k + 10);
+      if (pair <= yMax) {
+        svg.appendChild(el("line", { x1: ml, y1: py(pair), x2: W - mr, y2: py(pair), class: "series-ghost" }));
+        svg.appendChild(text(W - mr - 4, py(pair) - 8, "two rank-10 placements = " + pair.toFixed(4), "note-text", "end"));
+      }
+
+      [1, 2, 3, 5, 10, 20].forEach(function (mark) {
+        var v = 1 / (k + mark);
+        if (v > yMax) return;
+        svg.appendChild(el("circle", { cx: px(mark), cy: py(v), r: 4, class: "dot-main" }));
+        svg.appendChild(text(px(mark) + 8, py(v) - 8, v.toFixed(4), "val-label"));
+      });
+
+      [1, 5, 10, 15, 20].forEach(function (mark) {
+        svg.appendChild(text(px(mark), H - mb + 20, String(mark), "tick-text", "middle"));
+      });
+      svg.appendChild(el("line", { x1: ml, y1: H - mb, x2: W - mr, y2: H - mb, class: "axis-line" }));
+      svg.appendChild(text(ml, H - 8, "RANK IN ONE RANKING →", "axis-label"));
+      svg.appendChild(text(ml - 64, mt - 6, "CONTRIBUTION", "axis-label"));
+
+      rrfHost.replaceChildren(svg);
+    }
+
+    kInput.addEventListener("input", function () {
+      var v = parseInt(kInput.value, 10);
+      kOut.textContent = v;
+      drawRRF(v);
+    });
+    drawRRF(60);
+
+    /* ------------------------------------------------------------------ *
+     * Fig 10 — live re-fusion of the real candidate set
+     * ------------------------------------------------------------------ */
+    var fusionHost = document.getElementById("fusion-table");
+    var k2Input = document.getElementById("k2");
+    var k2Out = document.getElementById("k2-out");
+
+    function drawFusion(k) {
+      var scored = UNION.map(function (row, index) {
+        var score = 0;
+        if (row.l) score += 1 / (k + row.l);
+        if (row.v) score += 1 / (k + row.v);
+        return { s: row.s, l: row.l, v: row.v, score: score, order: index };
+      });
+
+      /* descending score, ties by first appearance — the shipped tie-break */
+      scored.sort(function (a, b) {
+        return b.score - a.score || a.order - b.order;
+      });
+
+      var head =
+        "<table><thead><tr><th class='n'>#</th><th>Subject</th>" +
+        "<th class='n'>lex</th><th class='n'>sem</th><th class='n'>fused</th></tr></thead><tbody>";
+
+      var body = scored.slice(0, 10).map(function (row, index) {
+        var both = row.l && row.v;
+        return "<tr" + (both ? " class='hi'" : "") + ">" +
+          "<td class='n'>" + (index + 1) + "</td>" +
+          "<td>" + row.s + "</td>" +
+          "<td class='n'>" + (row.l || "<span class='miss'>—</span>") + "</td>" +
+          "<td class='n'>" + (row.v || "<span class='miss'>—</span>") + "</td>" +
+          "<td class='n'>" + row.score.toFixed(5) + "</td></tr>";
+      }).join("");
+
+      fusionHost.innerHTML = head + body + "</tbody></table>";
+    }
+
+    k2Input.addEventListener("input", function () {
+      var v = parseInt(k2Input.value, 10);
+      k2Out.textContent = v;
+      drawFusion(v);
+    });
+    drawFusion(60);
+  })();
+</script>
