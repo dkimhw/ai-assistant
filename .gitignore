@@ -43,3 +43,6 @@ next-env.d.ts
 db.local.json
 data/*
 !data/emails.json
+# Committed so the app and its tests run without an API key.
+!data/email-vectors.json
+!data/query-vectors.json

@@ -409,8 +409,8 @@
   ol.steps .calc { font-family: var(--mono); font-size: .82rem; color: var(--ink-soft); background: var(--sunken); padding: .5rem .7rem; border-radius: 2px; margin-top: .5rem; overflow-x: auto; }
 
   ul.plain { list-style: none; padding: 0; margin: 1.2rem 0; display: flex; flex-direction: column; gap: .7rem; }
-  ul.plain li { display: grid; grid-template-columns: 1.1rem 1fr; gap: .7rem; font-size: .97rem; }
-  ul.plain li::before { content: "—"; color: var(--accent); font-family: var(--mono); }
+  ul.plain li { position: relative; padding-left: 1.8rem; font-size: .97rem; }
+  ul.plain li::before { content: "—"; color: var(--accent); font-family: var(--mono); position: absolute; left: 0; }
 
   footer {
     border-top: 1px solid var(--rule);

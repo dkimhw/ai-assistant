@@ -20,8 +20,6 @@ pnpm install
 2. Set up environment variables (`.env.local`):
 
 ```bash
-GOOGLE_GENERATIVE_AI_API_KEY=your_key_here
-ANTHROPIC_API_KEY=your_key_here  # optional
 OPENAI_API_KEY=your_key_here      # optional
 ```
 

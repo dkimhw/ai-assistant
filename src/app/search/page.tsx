@@ -27,9 +27,10 @@ export default async function SearchPage(props: {
 
   const allEmails = getAllEmails();
 
-  // With a query, order by BM25 relevance; without one, newest first.
+  // With a query, order by hybrid (BM25 + semantic) relevance; without one,
+  // newest first.
   const filteredEmails = query
-    ? searchEmails({ query, limit: allEmails.length }).map((result) =>
+    ? (await searchEmails({ query, limit: allEmails.length })).map((result) =>
         toListItem(result.email)
       )
     : allEmails
