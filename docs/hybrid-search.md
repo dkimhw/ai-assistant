@@ -148,7 +148,9 @@ is absent from the semantic ranking and scores `1/61 = 0.01639` — fourth.
 
 ## Chunking
 
-In the build script, because it is email-specific knowledge.
+In `src/lib/search/email-chunks.ts`, because it is email-specific knowledge. The
+alternatives considered and the reasoning behind each choice below are in
+[`chunking.md`](./chunking.md).
 
 1. **Strip quoted reply text** — `>`-prefixed lines, Gmail/Apple attribution lines, the
    Outlook separator, and header blocks. 13 of 547 emails are affected. Without this,
