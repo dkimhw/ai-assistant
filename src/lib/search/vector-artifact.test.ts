@@ -3,7 +3,7 @@ import {
   assertArtifactMatches,
   decodeVectors,
   encodeVectors,
-  fingerprintTexts,
+  fingerprintChunks,
   type VectorArtifact,
 } from "@/lib/search/vector-artifact";
 
@@ -14,11 +14,16 @@ import {
  * here rather than left to the adapter's smoke tests.
  */
 
+const chunks = [
+  { id: "email:a#0", text: "hello" },
+  { id: "email:b#0", text: "world" },
+];
+
 const artifact = (overrides?: Partial<VectorArtifact>): VectorArtifact => ({
   model: "text-embedding-3-small",
   dimensions: 2,
-  fingerprint: fingerprintTexts({ texts: ["hello", "world"] }),
-  ids: ["a#0", "b#0"],
+  fingerprint: fingerprintChunks({ chunks }),
+  ids: chunks.map((chunk) => chunk.id),
   vectors: encodeVectors({
     vectors: [Float32Array.from([1, 0]), Float32Array.from([0, 1])],
   }),
@@ -28,7 +33,7 @@ const artifact = (overrides?: Partial<VectorArtifact>): VectorArtifact => ({
 const matching = {
   model: "text-embedding-3-small",
   dimensions: 2,
-  fingerprint: fingerprintTexts({ texts: ["hello", "world"] }),
+  fingerprint: fingerprintChunks({ chunks }),
   rebuildCommand: "pnpm run build:vectors",
 };
 
@@ -54,19 +59,28 @@ describe("encode / decode", () => {
   });
 });
 
-describe("fingerprintTexts", () => {
+describe("fingerprintChunks", () => {
+  const withTexts = (texts: string[]) =>
+    fingerprintChunks({
+      chunks: texts.map((text, index) => ({ id: `s:${index}#0`, text })),
+    });
+
   it("distinguishes a merged text from two separate ones", () => {
-    expect(fingerprintTexts({ texts: ["a", "b"] })).not.toBe(
-      fingerprintTexts({ texts: ["a b"] })
-    );
-    expect(fingerprintTexts({ texts: ["a", "b"] })).not.toBe(
-      fingerprintTexts({ texts: ["ab"] })
-    );
+    expect(withTexts(["a", "b"])).not.toBe(withTexts(["a b"]));
+    expect(withTexts(["a", "b"])).not.toBe(withTexts(["ab"]));
   });
 
   it("is stable for identical input", () => {
-    expect(fingerprintTexts({ texts: ["one", "two"] })).toBe(
-      fingerprintTexts({ texts: ["one", "two"] })
+    expect(withTexts(["one", "two"])).toBe(withTexts(["one", "two"]));
+  });
+
+  it("moves when only the ids change, leaving every text alone", () => {
+    // The migration trap: namespacing ids changes no text, so a fingerprint over
+    // texts alone would keep accepting an artifact whose ids no longer resolve.
+    expect(fingerprintChunks({ chunks })).not.toBe(
+      fingerprintChunks({
+        chunks: chunks.map((chunk) => ({ ...chunk, id: chunk.id.slice(6) })),
+      })
     );
   });
 });
@@ -83,7 +97,29 @@ describe("assertArtifactMatches", () => {
       assertArtifactMatches({
         artifact: artifact(),
         ...matching,
-        fingerprint: fingerprintTexts({ texts: ["hello", "moon"] }),
+        fingerprint: fingerprintChunks({
+          chunks: [chunks[0], { id: "email:b#0", text: "moon" }],
+        }),
+      })
+    ).toThrow(/stale[\s\S]*build:vectors/);
+  });
+
+  it("throws when the texts still match but the id scheme has changed", () => {
+    // Every text is byte-identical; only the source namespace on the ids is
+    // missing. Accepting this artifact would look like a working search that
+    // returns nothing, because no id would resolve to a document.
+    const oldScheme = chunks.map((chunk) => ({
+      ...chunk,
+      id: chunk.id.slice("email:".length),
+    }));
+
+    expect(() =>
+      assertArtifactMatches({
+        artifact: artifact({
+          fingerprint: fingerprintChunks({ chunks: oldScheme }),
+          ids: oldScheme.map((chunk) => chunk.id),
+        }),
+        ...matching,
       })
     ).toThrow(/stale[\s\S]*build:vectors/);
   });

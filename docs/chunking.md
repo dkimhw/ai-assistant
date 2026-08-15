@@ -3,8 +3,9 @@
 How emails become the texts we embed, what the alternatives were, and why this
 corpus got the policy it did.
 
-Implementation: `src/lib/search/email-chunks.ts`. Query-time collapse back to
-emails: `src/lib/search/emails.ts`. The decision summary lives in
+Implementation: `src/lib/search/email-chunks.ts`, reached through
+`emailSource.chunk`. Query-time collapse back to documents:
+`src/lib/search/documents.ts`. The decision summary lives in
 [`hybrid-search.md`](./hybrid-search.md); this document is the reasoning behind
 that one line in its decision table.
 
@@ -24,7 +25,10 @@ directions:
 Chunking is the choice of where to sit between those. It is also, unavoidably,
 corpus-specific: the right answer for 500-word emails is not the right answer
 for 80-page PDFs. That is why it lives on the adapter side of the boundary, with
-the ranker seeing only vectors.
+the ranker seeing only vectors — and, since issue #6, why it is *selectable per
+source*: `chunk` is a function on `DocumentSource`, so a future source of long
+PDFs chunks differently from email without forking anything. The document layer
+calls it and never looks at what comes back except to collapse it.
 
 ## The strategies
 
@@ -112,8 +116,10 @@ For each email, in order:
 4. **Split bodies over 1,500 characters** on paragraph boundaries into
    ~1,200-character chunks with one paragraph of overlap (strategy 3), leaving
    everything shorter whole (strategy 1). 16 of 547 emails qualify.
-5. **Collapse chunks to their parent email** at query time, each email taking its
-   best-scoring chunk (strategy 6).
+5. **Collapse chunks to their parent document** at query time, each document
+   taking its best-scoring chunk (strategy 6). Chunk ids are `${documentId}#${n}`
+   and the collapse is the exact inverse of that formatting, both owned by
+   `document-id.ts`.
 
 547 emails → 606 chunks → 463 indexed vectors, after one-vote-per-distinct-text
 deduplication.

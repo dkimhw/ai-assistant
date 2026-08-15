@@ -3,7 +3,11 @@
 Lexical search over the email corpus. Dependency-free, in-process, built to be the
 lexical leg of the hybrid search added later (BM25 + embeddings joined by RRF).
 
-Status: **implemented.**
+Status: **implemented.** Superseded in part: hybrid search (issue #1) made
+`searchEmails` async and fused this ranking with a semantic one, and issue #6
+moved indexing and the entry point into a source registry — see
+[`hybrid-search.md`](./hybrid-search.md#document-sources). The BM25F ranker itself
+is unchanged, and this document still describes it accurately.
 
 ## Design constraint
 
@@ -85,14 +89,15 @@ export type Email = {
   arcId: string; phaseId: number;
 };
 
-export function getEmailIndex(): BM25Index;            // memoised module singleton
+export function getAllEmails(): Email[];               // memoised module singleton
 export function searchEmails(opts: {
   query: string; limit?: number;
 }): Array<{ email: Email; score: number }>;
 ```
 
-`getEmailIndex()` reads `data/emails.json` once and caches it. Server-only (it uses
-`fs`); it must not be imported from a client component.
+`getAllEmails()` reads `data/emails.json` once and caches it. Server-only (it uses
+`fs`); it must not be imported from a client component. The index built over those
+emails is memoised by the document layer rather than here — see `documents.ts`.
 
 ## Scoring
 
