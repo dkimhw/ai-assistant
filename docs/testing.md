@@ -3,22 +3,33 @@
 A description of what the test suite currently is, what each test buys us, and
 which tests are load-bearing enough to be worth your review time.
 
-Status as of this document: **46 tests, 4 files, all passing, ~400ms.**
-Every test lives in `src/lib/search/`. Nothing else in the repo is tested.
+Status as of this document: **84 tests, 8 files, all passing, ~500ms.**
+Almost every test lives in `src/lib/search/`; the one exception is described
+below and is a deliberate one.
 
 ```
-src/lib/search/tokenize.test.ts    8 tests    (impl:  92 lines)
-src/lib/search/bm25.test.ts       18 tests    (impl: 188 lines)
-src/lib/search/rrf.test.ts        17 tests    (impl:  57 lines)
-src/lib/search/emails.test.ts      3 tests    (impl:  77 lines)
+src/lib/search/tokenize.test.ts           8 tests
+src/lib/search/bm25.test.ts              18 tests
+src/lib/search/rrf.test.ts               17 tests
+src/lib/search/email-chunks.test.ts       9 tests
+src/lib/search/vector-artifact.test.ts    9 tests
+src/lib/search/emails.test.ts            10 tests
+src/lib/search/email-search-tool.test.ts 10 tests
+src/app/api/chat/tools.test.ts            3 tests
 ```
+
+> The test-by-test breakdown in section 3 covers `tokenize`, `bm25`, `rrf`,
+> `emails`, `email-search-tool`, and `tools`. `email-chunks.test.ts` and
+> `vector-artifact.test.ts` arrived with hybrid search and are not yet described
+> there.
 
 Run with `pnpm run test` (`vitest run`) or `pnpm run test:watch`.
 
-> `rrf.ts` is **not yet wired into anything** — no caller imports `fuseRRF`. It
-> exists alongside `scripts/build-email-vectors.ts` and a new `@ai-sdk/openai`
-> dependency, i.e. it is the fusion half of in-flight hybrid search work. Its
-> tests are real; its integration doesn't exist yet. See gaps.
+> `fuseRRF` is now wired up: `emails.ts` fuses the BM25F and semantic rankings
+> through it, and `email-search-tool.ts` is a second consumer of that same
+> pipeline. Gap 2 below, which was written when it had no callers, is stale in
+> that respect — but its substance is not. Nothing measures whether the fused
+> ordering is *good*.
 
 ---
 
@@ -242,6 +253,56 @@ decimal places. Worth checking specifically:
 | 2 | mortgage thread in top 3 for "mortgage pre-approval" | 🟡 | The only end-to-end test: real JSON → real tokeniser → real index → real ranker. Asserted loosely and labelled as such in a comment. It proves the pipeline is *connected*, not that ranking is *good*. |
 | 3 | nonsense query → `[]` | ⚪ | |
 
+The file has since grown to 10 tests, adding the semantic-index memo, conceptual
+queries answered through the vector leg, the duplicate-notification crowding
+guard, and lexical-only fallback when the embedder throws. The three above are
+still the ones worth review time.
+
+### `email-search-tool.test.ts` (10)
+
+The seam the chat model reaches search through. Tests build the tool with an
+injected embedder and call `execute` directly with typed arguments — no live
+model, no `Request`, no network. This is the highest seam testable without
+mock-model infrastructure the repo does not have.
+
+The split of assertion styles is the thing to notice: relevance is asserted
+**loosely** (same spirit as `emails.test.ts` — it proves the tool is wired to the
+ranker, not that ranking is good), while the payload contract is asserted
+**exactly**, because those are bounds the route and the model depend on rather
+than knobs anyone intends to tune.
+
+| # | Test | Rating | What it pins |
+| --- | --- | --- | --- |
+| 1 | returns emails recognisably on topic | 🟡 | The pipeline is connected: real corpus → real tokeniser → BM25F + semantic → RRF → tool payload. Smoke test, labelled as such. |
+| 2 | nonsense query → `[]` | 🔴 | "Nothing found" is a legitimate answer the model must be able to give. If this ever returns padding, the model will confidently answer from five irrelevant emails — the failure mode that actually matters here, and worse than silence. |
+| 3 | broad query caps at 5 | 🔴 | The payload bound. Caps worst-case context spend and cost per turn; `EMAIL_SEARCH_RESULT_COUNT` is the one constant to raise, and only with an eval that says raising it helped. |
+| 4 | narrow query returns fewer than 5 | 🟡 | The cap is a ceiling, not a target. Uses `deansgate`, which occurs in exactly one email. |
+| 5 | bodies truncated to the budget | 🔴 | The other half of the payload bound — the corpus's longest body is ~6600 characters, so five untruncated results could dominate the context window alone. Two-sided: every body is within budget **and** at least one actually reaches it, or the assertion is vacuous. |
+| 6 | exactly the documented fields, no score | 🔴 | The output contract, asserted as an exact key set. The fused RRF score is deliberately absent: it has no absolute meaning and inviting the model to reason about it invites nonsense. Adding a field silently changes what the model is being asked to read. |
+| 7 | embedder failure still yields lexical results | 🔴 | The graceful-degradation guarantee, pinned at the seam users actually reach. `rrf.test.ts`'s "one empty ranking" test pins the same guarantee one level down. An embedding outage degrades the assistant's results; it does not break chat. |
+| 8–10 | schema accepts a query, rejects missing, rejects empty | 🟡 | A bad call is refused by the Zod schema rather than reaching the ranker. |
+
+### `src/app/api/chat/tools.test.ts` (3)
+
+**The one test above the search layer, and a deliberate exception** rather than
+the thin end of a wedge toward route testing. It exists because the defect it
+guards ships green and surfaces a day later in a user's face.
+
+Persisted tool parts are replayed to `/api/chat` on the *next* request. If
+`safeValidateUIMessages` rejects that history, the failure lands not on the turn
+that searched but on the one after it, as a 400 and an unusable chat. Testing it
+needs no route infrastructure: `safeValidateUIMessages` is an async pure
+function, so the test hand-writes the message and calls it.
+
+The tool registry lives in `tools.ts` rather than `route.ts` specifically so this
+test can import it without dragging the route and the persistence layer along.
+
+| # | Test | Rating | What it pins |
+| --- | --- | --- | --- |
+| 1 | a persisted tool part validates | 🔴 | The main guarantee: a chat that has searched once can be continued. |
+| 2 | a malformed tool input is rejected | 🔴 | What makes #1 non-vacuous. **Note the surprise here:** in `ai@5.0.113`, *omitting* `tools` does not reject a tool part — it skips tool-part validation entirely and the message passes unchecked. So the argument's job is to make persisted tool parts *checked*, not merely *accepted*. This test is what states that, and what stops the argument being deleted as decorative. |
+| 3 | an unregistered tool name is rejected | 🟡 | The consequence of turning that validation on, recorded on purpose: renaming or removing the tool breaks every chat that used it, because persisted history outlives the tool registry. |
+
 ---
 
 ## 4. The load-bearing set, in review order
@@ -320,8 +381,16 @@ Listed as findings, not recommendations — the scoping calls are yours.
    `>` filter, so a zero-scoring document is dropped. That boundary — the one
    that actually runs on every query — has no test; only `minScore: 1000` does.
 
-6. **Nothing above the search layer is tested.** `src/app/api/chat/route.ts`, the
-   `useChat` UI, and `src/lib/persistence-layer.ts` have no coverage. For the
-   route and UI this is a defensible choice; `persistence-layer.ts` is worth a
-   second look, since its read-modify-write save path is last-write-wins with no
-   locking, and data-loss bugs are also the silent kind.
+6. **Almost nothing above the search layer is tested.** `src/app/api/chat/route.ts`,
+   the `useChat` UI, and `src/lib/persistence-layer.ts` have no coverage; the
+   sole exception is `tools.test.ts`, which covers message validation only. For
+   the route and UI this is a defensible choice; `persistence-layer.ts` is worth
+   a second look, since its read-modify-write save path is last-write-wins with
+   no locking, and data-loss bugs are also the silent kind.
+
+7. **Nothing measures the queries the model writes.** The tool hands query-writing
+   to an LLM, but every tuning decision in the search layer — the stopword list,
+   the absent stemmer, the field weights, `k = 60` — was made against queries a
+   human typed. LLM queries are longer and more prose-like, and those choices
+   will bite differently there. This is the first thing an eval suite should
+   measure, and it is entirely unmeasured today.

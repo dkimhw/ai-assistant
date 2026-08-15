@@ -30,11 +30,14 @@ memory store, and a BM25F lexical search over an email corpus.
 
 - **Framework**: Next.js 15 (App Router), React 19
 - **AI SDK**: Vercel AI SDK (`ai`) with `@ai-sdk/react` on the client
-- **Model**: `gemini-2.5-flash-lite` via `@ai-sdk/google`, for both chat and
-  title generation. `@ai-sdk/anthropic` is installed but not currently wired up.
+- **Model**: `gpt-5.4-mini` for chat, `gpt-5.4-nano` for titles, both via
+  `@ai-sdk/openai` and both named in `src/app/api/chat/model.ts`.
+  `@ai-sdk/google` and `@ai-sdk/anthropic` are installed but not wired up.
 - **Streaming**: `streamText` composed into a custom `createUIMessageStream`
+- **Tools**: one — email search, given to the chat loop with a step limit
 - **Persistence**: a single JSON file, `data/db.local.json` (no database)
-- **Search**: hand-rolled BM25F over `data/emails.json`, no search dependency
+- **Search**: hand-rolled BM25F over `data/emails.json`, fused with a semantic
+  ranking by RRF; no search dependency
 - **Testing**: vitest; `evalite` is installed and configured for relevance evals
   but has no suites yet
 - **Markdown**: `streamdown` for rendering
@@ -46,10 +49,13 @@ memory store, and a BM25F lexical search over an email corpus.
 - `src/app/chat.tsx` — the client chat component, `useChat`
 - `src/app/api/chat/route.ts` — streaming chat endpoint; also exports `MyMessage`
 - `src/app/api/chat/generate-title.ts` — one-shot `generateText` title generation
+- `src/app/api/chat/model.ts` — the model ids and the OpenAI key convention
+- `src/app/api/chat/tools.ts` — the tool set the chat loop is given
 - `src/app/actions/memories.ts` — server actions for memory CRUD
 - `src/app/search/` — email search page plus its route-local components
-- `src/lib/search/` — `bm25.ts`, `tokenize.ts` (both corpus-agnostic) and
-  `emails.ts` (the email adapter), with tests
+- `src/lib/search/` — `bm25.ts`, `tokenize.ts`, `rrf.ts`, `semantic.ts` (all
+  corpus-agnostic), `emails.ts` (the email adapter), and
+  `email-search-tool.ts` (the adapter shaped as an AI SDK tool), with tests
 - `src/lib/persistence-layer.ts` — JSON-file store for chats and memories
 - `src/components/ai-elements/` — AI chat UI primitives
 - `src/components/ui/` — shadcn/Radix primitives
@@ -69,13 +75,24 @@ builds a `createUIMessageStream` and merges the model stream into it:
 ```typescript
 const stream = createUIMessageStream<MyMessage>({
   execute: async ({ writer }) => {
-    const result = streamText({ model: google("gemini-2.5-flash-lite"), messages });
+    const result = streamText({
+      model: getChatModel(),
+      system: SYSTEM_PROMPT,
+      messages,
+      tools: chatTools,
+      stopWhen: stepCountIs(MAX_STEPS),
+    });
     writer.merge(result.toUIMessageStream({ sendSources: true, sendReasoning: true }));
   },
   onFinish: async ({ responseMessage }) => { /* persist */ },
 });
 return createUIMessageStreamResponse({ stream });
 ```
+
+`safeValidateUIMessages` must be passed `chatTools` too. Persisted tool parts are
+replayed on the *next* request, and the argument is what gets them validated
+against the tool's schema rather than waved through — see
+`src/app/api/chat/tools.test.ts`.
 
 The writer form (rather than `result.toUIMessageStreamResponse()`) is what allows
 persistence and custom data parts to interleave with the model output.
@@ -92,6 +109,7 @@ Messages have a `parts` array that can contain multiple types:
 - `text` — regular text content
 - `reasoning` — extended thinking content
 - `source-url` — URLs referenced in responses
+- `tool-searchEmails` — an email search call, rendered as a collapsible block
 
 `MyMessage` is the project's `UIMessage` specialisation. It adds a custom
 `data-frontend-action` part carrying `"refresh-sidebar"`, written with

@@ -35,6 +35,13 @@ import {
   SourcesContent,
   SourcesTrigger,
 } from "@/components/ai-elements/sources";
+import {
+  Tool,
+  ToolContent,
+  ToolHeader,
+  ToolInput,
+  ToolOutput,
+} from "@/components/ai-elements/tool";
 import { DB } from "@/lib/persistence-layer";
 import { useChat } from "@ai-sdk/react";
 import { CopyIcon, RefreshCcwIcon } from "lucide-react";
@@ -172,6 +179,26 @@ export const Chat = (props: { chat: DB.Chat | null }) => {
                         <ReasoningTrigger />
                         <ReasoningContent>{part.text}</ReasoningContent>
                       </Reasoning>
+                    );
+                  case "tool-searchEmails":
+                    // Collapsed by default — the transcript stays readable for
+                    // anyone who does not care about the mechanics, and the
+                    // header's state badge distinguishes in-flight from done.
+                    return (
+                      <Tool key={`${message.id}-${i}`}>
+                        <ToolHeader
+                          title="Searched your email"
+                          type={part.type}
+                          state={part.state}
+                        />
+                        <ToolContent>
+                          <ToolInput input={part.input} />
+                          <ToolOutput
+                            output={part.output}
+                            errorText={part.errorText}
+                          />
+                        </ToolContent>
+                      </Tool>
                     );
                   default:
                     return null;
