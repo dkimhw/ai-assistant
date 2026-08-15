@@ -5,7 +5,6 @@ import {
   getChat,
   updateChatTitle,
 } from "@/lib/persistence-layer";
-import { google } from "@ai-sdk/google";
 import {
   convertToModelMessages,
   createUIMessageStream,
@@ -15,6 +14,7 @@ import {
   UIMessage,
 } from "ai";
 import { generateTitleForChat } from "./generate-title";
+import { getChatModel } from "./model";
 
 // Allow streaming responses up to 30 seconds
 export const maxDuration = 30;
@@ -91,7 +91,7 @@ export async function POST(req: Request) {
       }
 
       const result = streamText({
-        model: google("gemini-2.5-flash-lite"),
+        model: getChatModel(),
         messages: convertToModelMessages(messages),
       });
 
