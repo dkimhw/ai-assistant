@@ -1,3 +1,5 @@
+import { formatChunkId } from "@/lib/search/document-id";
+
 /**
  * Turning emails into the texts we embed. This is email-specific knowledge and
  * lives on the adapter side of the boundary — the semantic ranker sees vectors
@@ -18,9 +20,8 @@
  */
 
 export type EmailChunk = {
-  /** `${emailId}#${n}` — unique per chunk, so the ranker can rank chunks. */
+  /** `${documentId}#${n}` — unique per chunk, so the ranker can rank chunks. */
   id: string;
-  emailId: string;
   text: string;
 };
 
@@ -91,28 +92,21 @@ const splitIntoChunks = (text: string): string[] => {
   return chunks;
 };
 
+/**
+ * `id` is the document id the chunks hang off — the document layer mints it and
+ * `formatChunkId` derives the chunk ids from it, so the `#` convention is not
+ * re-implemented here.
+ */
 export const chunkEmail = (opts: {
   email: { id: string; subject: string; body: string };
 }): EmailChunk[] => {
   const { email } = opts;
 
-  // Chunk ids are `${emailId}#${n}` and the adapter splits them back on "#" to
-  // collapse chunks to emails, so an id containing one would silently drop the
-  // email from every result.
-  if (email.id.includes("#")) {
-    throw new Error(`Email id "${email.id}" must not contain "#".`);
-  }
-
   const body = stripQuotedText(email.body);
   const bodies = body.length > LONG_BODY_CHARS ? splitIntoChunks(body) : [body];
 
   return bodies.map((text, index) => ({
-    id: `${email.id}#${index}`,
-    emailId: email.id,
+    id: formatChunkId({ documentId: email.id, index }),
     text: `${email.subject}\n\n${text}`.trim(),
   }));
 };
-
-export const chunkEmails = (opts: {
-  emails: Array<{ id: string; subject: string; body: string }>;
-}): EmailChunk[] => opts.emails.flatMap((email) => chunkEmail({ email }));

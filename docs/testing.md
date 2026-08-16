@@ -3,7 +3,7 @@
 A description of what the test suite currently is, what each test buys us, and
 which tests are load-bearing enough to be worth your review time.
 
-Status as of this document: **141 tests, 10 files, all passing, ~800ms.**
+Status as of this document: **159 tests, 11 files, all passing, ~900ms.**
 Almost every test lives in `src/lib/search/`; the one exception is described
 below and is a deliberate one.
 
@@ -12,8 +12,9 @@ src/lib/search/tokenize.test.ts           8 tests
 src/lib/search/bm25.test.ts              18 tests
 src/lib/search/rrf.test.ts               17 tests
 src/lib/search/email-chunks.test.ts       9 tests
-src/lib/search/vector-artifact.test.ts    9 tests
-src/lib/search/emails.test.ts            10 tests
+src/lib/search/vector-artifact.test.ts   11 tests
+src/lib/search/documents.test.ts         17 tests
+src/lib/search/emails.test.ts             9 tests
 src/lib/search/email-search-tool.test.ts 10 tests
 src/lib/search/email-filter-tool.test.ts 32 tests
 src/lib/search/email-get-tool.test.ts    21 tests
@@ -23,8 +24,9 @@ src/app/api/chat/tools.test.ts            7 tests
 > The test-by-test breakdown in section 3 covers `tokenize`, `bm25`, `rrf`,
 > `emails`, `email-search-tool`, and `tools`. `email-chunks.test.ts` and
 > `vector-artifact.test.ts` arrived with hybrid search and are not yet described
-> there; `email-filter-tool.test.ts` and `email-get-tool.test.ts` arrived with
-> the filter and fetch tools (issue #10) and are summarised below.
+> there. `documents.test.ts` arrived with source-namespaced ids (issue #6), and
+> `email-filter-tool.test.ts` and `email-get-tool.test.ts` with the filter and
+> fetch tools (issue #10); both are summarised below.
 
 ### The filter and fetch tools
 
@@ -290,14 +292,40 @@ decimal places. Worth checking specifically:
 
 | # | Test | Rating | What it pins |
 | --- | --- | --- | --- |
-| 1 | indexes the whole corpus once | 🔴 | Two assertions doing different jobs. `getEmailIndex() === getEmailIndex()` is a **performance contract**: the module-level memo must hold, or every request re-reads and re-indexes 500+ emails. Breakage is invisible in correctness terms and shows up only as latency. `docCount > 500` catches a truncated or failed corpus load. |
+| 1 | reads the whole corpus once | 🔴 | Two assertions doing different jobs. `getAllEmails() === getAllEmails()` is a **performance contract**: the module-level memo must hold, or every request re-reads and re-indexes 500+ emails. Breakage is invisible in correctness terms and shows up only as latency. `length > 500` catches a truncated or failed corpus load. (Until issue #6 this asserted on `getEmailIndex()`; the index moved to the document layer, which memoises it per source set.) |
 | 2 | mortgage thread in top 3 for "mortgage pre-approval" | 🟡 | The only end-to-end test: real JSON → real tokeniser → real index → real ranker. Asserted loosely and labelled as such in a comment. It proves the pipeline is *connected*, not that ranking is *good*. |
 | 3 | nonsense query → `[]` | ⚪ | |
 
-The file has since grown to 10 tests, adding the semantic-index memo, conceptual
-queries answered through the vector leg, the duplicate-notification crowding
-guard, and lexical-only fallback when the embedder throws. The three above are
-still the ones worth review time.
+The file has since grown to 9 tests, adding conceptual queries answered through
+the vector leg, the duplicate-notification crowding guard, and lexical-only
+fallback when the embedder throws. The three above are still the ones worth
+review time. Since issue #6 it is also the **relevance regression net**: it drives
+the whole hybrid pipeline through `searchEmails`, so a refactor of identity that
+moved results would fail here.
+
+### `documents.test.ts` (17)
+
+Cross-source behaviour at the one new public seam, `searchDocuments`. No second
+real corpus and no mocks: `sources` is a parameter, so the tests pass tiny
+in-memory fakes the way `bm25.test.ts` passes inline documents.
+
+| # | Test | Rating | What it pins |
+| --- | --- | --- | --- |
+| 1 | two sources minting the same native id stay two documents | 🔴 | The reason ids are namespaced at all. Its failure mode is one document silently shadowing another — a wrong result, not an error. |
+| 2 | a reserved character in a native id throws, naming the id | 🔴 | The other silent failure: a malformed id parses back into a different id, misses every lookup, and drops the document from all results. |
+| 3 | a source with no native ids gets stable content-derived ones | 🟡 | The hash fallback, asserted as *behaviour* — same content, same id across builds; different content, different id — never as a hash value. |
+| 4 | a chunked document collapses to one result | 🟡 | Best-chunk-wins, now generic rather than email-specific. |
+| 5 | a rejecting embedder degrades to lexical-only | 🔴 | The graceful-degradation guarantee, at the layer that now owns it. |
+| 6 | sources disagreeing on a field weight are refused | 🟡 | A merged index has one weight per field name; a silent overwrite would retune ranking by accident. |
+| 7 | a source minting one id for two documents is refused | 🔴 | The hashed-id path can collide, and the collision would otherwise be a lost document rather than an error. |
+| 8 | a vector for a chunk the source does not have is refused | 🔴 | An artifact that has drifted from the chunking policy, caught loudly instead of ranking over half a corpus. |
+| 9 | a set of sources is indexed once however many queries run | 🔴 | The performance contract the deleted `emails.test.ts` memo tests used to hold: without it every query re-reads the corpus and rebuilds both indexes, invisibly. Counts `all()` invocations on an injected fake — the one place this suite counts calls, because the failure is latency and not a wrong answer. |
+| 10 | the source filter is applied before the limit | 🟡 | `searchEmails({ limit: 5 })` must mean five emails, not five documents of which some are emails. |
+| 11 | no vectors anywhere → no embedding round-trip | 🟡 | Cost and latency, invisible in the result. |
+| 12–17 | source labelling, semantic ranking with fake vectors, empty query, `getDocument` routing and unknown-source error | ⚪ | |
+
+Nothing here asserts on the id format itself. The `:` and `#` conventions should
+be replaceable without touching this file.
 
 ### `email-search-tool.test.ts` (10)
 
@@ -323,7 +351,7 @@ than knobs anyone intends to tune.
 | 7 | embedder failure still yields lexical results | 🔴 | The graceful-degradation guarantee, pinned at the seam users actually reach. `rrf.test.ts`'s "one empty ranking" test pins the same guarantee one level down. An embedding outage degrades the assistant's results; it does not break chat. |
 | 8–10 | schema accepts a query, rejects missing, rejects empty | 🟡 | A bad call is refused by the Zod schema rather than reaching the ranker. |
 
-### `src/app/api/chat/tools.test.ts` (3)
+### `src/app/api/chat/tools.test.ts` (7)
 
 **The one test above the search layer, and a deliberate exception** rather than
 the thin end of a wedge toward route testing. It exists because the defect it
@@ -343,6 +371,8 @@ test can import it without dragging the route and the persistence layer along.
 | 1 | a persisted tool part validates | 🔴 | The main guarantee: a chat that has searched once can be continued. |
 | 2 | a malformed tool input is rejected | 🔴 | What makes #1 non-vacuous. **Note the surprise here:** in `ai@5.0.113`, *omitting* `tools` does not reject a tool part — it skips tool-part validation entirely and the message passes unchecked. So the argument's job is to make persisted tool parts *checked*, not merely *accepted*. This test is what states that, and what stops the argument being deleted as decorative. |
 | 3 | an unregistered tool name is rejected | 🟡 | The consequence of turning that validation on, recorded on purpose: renaming or removing the tool breaks every chat that used it, because persisted history outlives the tool registry. |
+| 4–5 | a persisted filter part, and a persisted fetch part, validate | 🔴 | The same guarantee as #1 for the two tools added in issue #10. Adding a tool is exactly the change that could reintroduce the 400, since a part is only checked against a registry that still holds its name. |
+| 6–7 | an empty filter criteria object, and an empty id list, are rejected | 🟡 | Both are refusals the tools make at their schema — "no criteria" is not a request for the whole corpus, and "no ids" is not a fetch. These pin that the refusals survive into replayed history rather than being enforced only on the live call. |
 
 ---
 

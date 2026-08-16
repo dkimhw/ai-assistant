@@ -7,8 +7,9 @@ import { chunkEmail, stripQuotedText } from "@/lib/search/email-chunks";
  * These pin the conventions we claim to handle.
  */
 
+// The id is the document id the layer mints; chunking only appends to it.
 const email = (opts: { body: string; subject?: string }) => ({
-  id: "e1",
+  id: "email:e1",
   subject: opts.subject ?? "Subject",
   body: opts.body,
 });
@@ -56,8 +57,7 @@ describe("chunkEmail", () => {
     });
 
     expect(chunk.text).toBe("Exchange of Contracts\n\nDear Sarah,");
-    expect(chunk.id).toBe("e1#0");
-    expect(chunk.emailId).toBe("e1");
+    expect(chunk.id).toBe("email:e1#0");
   });
 
   it("leaves a short body as a single chunk", () => {
@@ -74,7 +74,7 @@ describe("chunkEmail", () => {
 
     expect(chunks.length).toBeGreaterThan(1);
     expect(chunks.map((chunk) => chunk.id)).toEqual(
-      chunks.map((_, index) => `e1#${index}`)
+      chunks.map((_, index) => `email:e1#${index}`)
     );
     // Every chunk carries the subject, so no fragment loses its thread.
     for (const chunk of chunks) expect(chunk.text.startsWith("Subject")).toBe(true);

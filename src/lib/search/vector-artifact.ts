@@ -17,7 +17,10 @@ import { createHash } from "node:crypto";
 export type VectorArtifact = {
   model: string;
   dimensions: number;
-  /** Digest of the exact texts that were embedded. Any corpus or chunking change moves it. */
+  /**
+   * Digest of the exact chunks that were embedded, ids included. Any corpus,
+   * chunking, or id-scheme change moves it.
+   */
   fingerprint: string;
   /** Ids parallel to the vectors, one per embedded text. */
   ids: string[];
@@ -25,14 +28,25 @@ export type VectorArtifact = {
   vectors: string;
 };
 
-/** Digest of the embedded texts. Deliberately covers the chunking policy, not just the corpus. */
-export const fingerprintTexts = (opts: { texts: string[] }): string => {
+/**
+ * Digest of the embedded chunks. Deliberately covers the chunking policy and the
+ * id scheme, not just the corpus.
+ *
+ * The ids are in here because they are the half that can go stale invisibly: a
+ * change to how ids are formed leaves every text byte-identical, so a digest
+ * over texts alone would keep accepting an artifact whose ids no longer resolve
+ * to any document — search that works and returns nothing.
+ */
+export const fingerprintChunks = (opts: {
+  chunks: Array<{ id: string; text: string }>;
+}): string => {
   const hash = createHash("sha256");
-  // Length-prefixed rather than separated, so nothing a text could contain can
-  // imitate a boundary: ["a", "b"] must not hash the same as ["a b"], or a
-  // chunking change that merges adjacent chunks would go undetected.
-  for (const text of opts.texts) {
-    hash.update(`${text.length}:${text}`);
+  // Length-prefixed rather than separated, so nothing an id or a text could
+  // contain can imitate a boundary: ["a", "b"] must not hash the same as
+  // ["a b"], or a chunking change that merges adjacent chunks would go
+  // undetected.
+  for (const chunk of opts.chunks) {
+    hash.update(`${chunk.id.length}:${chunk.id}${chunk.text.length}:${chunk.text}`);
   }
   return hash.digest("hex");
 };

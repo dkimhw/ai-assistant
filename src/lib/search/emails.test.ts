@@ -2,11 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Embedder } from "@/lib/search/embedder";
-import {
-  getEmailIndex,
-  getEmailSemanticIndex,
-  searchEmails,
-} from "@/lib/search/emails";
+import { getAllEmails, searchEmails } from "@/lib/search/emails";
 import {
   decodeVectors,
   type VectorArtifact,
@@ -61,16 +57,9 @@ const subjects = (results: Array<{ email: { subject: string } }>) =>
 describe("searchEmails", () => {
   const embedder = fixtureEmbedder();
 
-  it("indexes the whole corpus once", () => {
-    expect(getEmailIndex()).toBe(getEmailIndex());
-    expect(getEmailIndex().docCount).toBeGreaterThan(500);
-  });
-
-  it("builds the semantic index once, over one vector per distinct text", () => {
-    expect(getEmailSemanticIndex()).toBe(getEmailSemanticIndex());
-    // Fewer vectors than emails, because exact-duplicate texts are indexed once.
-    expect(getEmailSemanticIndex().ids.length).toBeGreaterThan(400);
-    expect(getEmailSemanticIndex().dimensions).toBe(1536);
+  it("reads the whole corpus once", () => {
+    expect(getAllEmails()).toBe(getAllEmails());
+    expect(getAllEmails().length).toBeGreaterThan(500);
   });
 
   it("finds the conveyancing thread from a query sharing none of its words", async () => {

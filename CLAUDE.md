@@ -55,7 +55,8 @@ memory store, and a BM25F lexical search over an email corpus.
 - `src/app/actions/memories.ts` — server actions for memory CRUD
 - `src/app/search/` — email search page plus its route-local components
 - `src/lib/search/` — `bm25.ts`, `tokenize.ts`, `rrf.ts`, `semantic.ts` (all
-  corpus-agnostic), `emails.ts` (the email adapter), and
+  corpus-agnostic), `documents.ts` (the source registry and `searchDocuments`),
+  `document-id.ts` (the id scheme), `emails.ts` (the email source adapter), and
   `email-search-tool.ts`, `email-filter-tool.ts` and `email-get-tool.ts` (the
   adapter shaped as three AI SDK tools), with tests
 - `src/lib/persistence-layer.ts` — JSON-file store for chats and memories
@@ -126,18 +127,33 @@ picks up a newly created chat and its generated title.
 
 ### Search Architecture
 
-Deliberately split into a generic core and a thin adapter:
+Three layers, deliberately: corpus-agnostic rankers, a document layer, and source
+adapters.
 
-- `bm25.ts` and `tokenize.ts` know nothing about emails — documents are
-  `{ id, fields }` and the ranker is BM25F with per-field weights and lengths.
-- `emails.ts` is the adapter: it reads the corpus, maps `Email` onto
-  subject/body/from/to, and owns the field weights
-  (`{ subject: 3, body: 1, from: 2, to: 1 }`, a starting guess to be tuned
-  against evals).
+- `bm25.ts`, `semantic.ts`, `rrf.ts` and `tokenize.ts` know nothing about emails
+  — documents are `{ id, fields }` or `{ id, vector }`, and ids are opaque.
+- `documents.ts` owns the source registry and the single public entry point,
+  `searchDocuments`. It mints ids, unions every source into one index of each
+  kind, fuses the two rankings, and collapses chunk hits back to documents. It
+  never inspects a document's content. `sources` and `embedder` are both
+  injectable, so tests use fakes rather than mocks.
+- `emails.ts` is the first source adapter: it reads the corpus, maps `Email` onto
+  subject/body/from/to, owns the field weights (`{ subject: 3, body: 1, from: 2,
+  to: 1 }`, a starting guess to be tuned against evals), delegates chunking to
+  `email-chunks.ts`, and supplies the committed vectors. `searchEmails` is a thin
+  wrapper over `searchDocuments` so the search page still receives `Email`s.
 
-Both the corpus and the index are memoised module singletons, built on first use
-and held for the process lifetime. `emails.ts` is **server-only** — it reads from
-disk with `node:fs`. Design rationale is in `docs/bm25-search.md`.
+Document ids are `${sourceType}:${nativeId}` (`email:email_1759…`) and chunk ids
+are `${documentId}#${n}`. `:` and `#` are reserved and rejected at index time;
+formatting and parsing live only in `document-id.ts`. A source with no natural id
+declares `hasNativeIds: false` and gets a content hash instead.
+
+The corpus and the built indexes are memoised for the process lifetime. `emails.ts`
+and `documents.ts` are **server-only** — they read from disk with `node:fs`.
+Design rationale is in `docs/bm25-search.md` and `docs/hybrid-search.md`.
+
+Adding a kind of document: write a `DocumentSource`, register it in
+`documents.ts`, run `pnpm run build:vectors`.
 
 ### Component Architecture
 

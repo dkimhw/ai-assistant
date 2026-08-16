@@ -19,6 +19,29 @@ fixtures, and the adapter needs only a smoke test. Keep project specifics out of
 the generic half; if `bm25.ts` ever needs to know what a subject line is, the
 split has been broken.
 
+### Registries, when there is more than one adapter
+
+`search/documents.ts` is the same pattern one level up: a *registry* of source
+adapters and a single entry point, `searchDocuments`, that ranks across all of
+them. `search/emails.ts` is now one registered `DocumentSource` rather than the
+thing search is built around, and adding a second kind of document is writing an
+adapter and registering it.
+
+Two rules that make a registry pay for itself:
+
+- **Namespace identity structurally.** A document id is `${sourceType}:${nativeId}`
+  so two sources cannot silently collide, and any id says what it is without a
+  lookup. Formatting and parsing live in exactly one module (`document-id.ts`);
+  no `split("#")` anywhere else.
+- **Make the registry a parameter.** `searchDocuments` takes `sources`, defaulted
+  to the registry, for the same reason `buildBM25Index` takes `tokenize`: a test
+  proves cross-source behaviour with in-memory fakes and no mock.
+
+The layer above the adapters stays as ignorant as the layer below them: the
+document layer mints ids and fuses rankings, and never inspects a document's
+content. Anything content-shaped — chunking policy, field choice, weights —
+belongs to the source.
+
 ## Document the maths
 
 A module implementing a non-obvious algorithm carries its formulae in a header
@@ -46,13 +69,18 @@ and the tests stay honest — see [testing.md](testing.md).
 Expensive one-time work is cached at module scope behind a getter, with `??=`:
 
 ```ts
-let cachedIndex: BM25Index | undefined;
+let cachedEmails: Email[] | undefined;
 
-export const getEmailIndex = (): BM25Index => {
-  cachedIndex ??= buildBM25Index({ ... });
-  return cachedIndex;
+export const getAllEmails = (): Email[] => {
+  cachedEmails ??= JSON.parse(fs.readFileSync(EMAILS_PATH, "utf-8")) as Email[];
+  return cachedEmails;
 };
 ```
+
+When the work is cached *per argument* rather than once, key a `WeakMap` on the
+argument's identity — `documents.ts` caches one built corpus per `sources` array,
+so the registry is indexed once and a test's injected fakes are indexed once
+each.
 
 Never do the work at import time — that would run it during the build. Note that
 the cache lifetime is the server process, so **it will not pick up changes to the

@@ -3,7 +3,8 @@
 Semantic search over the email corpus, fused with the existing BM25F lexical ranker.
 Implements GitHub issue #1.
 
-Status: **implemented.**
+Status: **implemented.** Superseded in part by issue #6, which moved the adapter
+boundary — see [Document sources](#document-sources) below.
 
 ## The problem
 
@@ -32,7 +33,9 @@ rank 1. That single query is the whole feature.
 
 Unchanged from BM25: the rankers are corpus-agnostic, and every email-specific decision
 lives in the adapter. Chunking, quote stripping and field selection are adapter
-concerns; vectors and dot products are ranker concerns. The lexical ranker and tokenizer
+concerns; vectors and dot products are ranker concerns. Since issue #6 there is a third
+layer between them — the document layer, which owns identity and the source registry and
+also never looks at content. The lexical ranker and tokenizer
 were **not modified**, and the search page changed by one `await`.
 
 ## Decisions
@@ -55,7 +58,9 @@ src/lib/search/rrf.ts             # fuseRRF — pure, no I/O
 src/lib/search/embedder.ts        # Embedder interface + OpenAI implementation
 src/lib/search/email-chunks.ts    # email → embeddable texts (quote stripping, chunking)
 src/lib/search/vector-artifact.ts # base64 Float32 packing + staleness checks
-src/lib/search/emails.ts          # adapter: runs both rankers, fuses  (modified)
+src/lib/search/documents.ts       # document layer: registry, ids, runs both rankers, fuses
+src/lib/search/document-id.ts     # the id scheme, formatting and parsing
+src/lib/search/emails.ts          # the email source adapter
 scripts/build-email-vectors.ts    # pnpm run build:vectors
 data/email-vectors.json           # 606 chunk vectors, 4.99 MB, committed
 data/query-vectors.json           # real embeddings of the test queries, 0.05 MB, committed
@@ -105,14 +110,20 @@ export function createOpenAIEmbedder(opts?: {
 ```
 
 ```ts
-// emails.ts — the one breaking change
+// documents.ts — the entry point since issue #6
+export function searchDocuments(opts: {
+  query: string;
+  limit?: number;
+  sources?: DocumentSource[];  // defaults to the registry; tests inject fakes
+  embedder?: Embedder;         // defaults to the configured OpenAI embedder
+}): Promise<Array<{ document: SearchDocument; score: number }>>;
+
+// emails.ts — a thin wrapper over it, so the search page still gets emails
 export function searchEmails(opts: {
   query: string;
   limit?: number;
-  embedder?: Embedder;    // defaults to the configured OpenAI embedder
+  embedder?: Embedder;
 }): Promise<Array<{ email: Email; score: number }>>;
-
-export function getEmailSemanticIndex(): SemanticIndex;  // memoised module singleton
 ```
 
 `searchEmails` is now `async`. Its return shape is unchanged, so consumers see only the
@@ -189,8 +200,8 @@ from 606 vectors to 463.
 type VectorArtifact = {
   model: string;         // "text-embedding-3-small"
   dimensions: number;    // 1536
-  fingerprint: string;   // sha256 of the exact texts embedded
-  ids: string[];         // chunk ids, `${emailId}#${n}`
+  fingerprint: string;   // sha256 of the exact chunks embedded: ids and texts
+  ids: string[];         // chunk ids, `${documentId}#${n}`
   vectors: string;       // base64 of ids.length × dimensions little-endian Float32s
 };
 ```
@@ -200,10 +211,16 @@ of 606 × 1536 floats is over 10 MB of text, and the packed form decodes with on
 `Buffer.from`. `text-embedding-3-small` can return fewer dimensions, which shrinks the
 file roughly proportionally at some cost to quality — a documented knob, not a default.
 
-The fingerprint covers the embedded **texts**, so it moves when the corpus changes _and_
-when the chunking policy changes. Loading revalidates model, dimension count and
-fingerprint, and throws with a rebuild instruction on any mismatch. Stale vectors
-degrade relevance silently, which is worse than a loud failure at startup.
+The fingerprint covers the embedded **chunks** — their ids as well as their texts — so it
+moves when the corpus changes, when the chunking policy changes, _and_ when the id scheme
+changes. Loading revalidates model, dimension count and fingerprint, and throws with a
+rebuild instruction on any mismatch. Stale vectors degrade relevance silently, which is
+worse than a loud failure at startup.
+
+The ids are in the digest because of a trap issue #6 walked into: namespacing every id
+leaves every text byte-identical, so a digest over texts alone would have kept accepting
+an artifact whose ids no longer resolved to any document — search that works, ranks
+correctly, and returns an empty page.
 
 ## Build step
 
@@ -246,13 +263,22 @@ Two seams, plus two mechanisms that would otherwise fail silently:
   A hand-computed RRF score as the oracle; agreement beating a single first place;
   the convexity of `1/(k+r)`; determinism under ties; monotonicity in `k`; one empty
   ranking degrading to the other's order; both empty; limit.
-- **`emails.test.ts` (10)** — loose adapter smoke tests with an injected embedder that
+- **`documents.test.ts` (17)** — cross-source behaviour through the one public seam,
+  with in-memory fake sources passed as `sources`: two sources minting the same native
+  id stay two documents, a result carries the source that supplied it, a reserved
+  character in a native id throws with the id in the message, a source declaring no
+  native ids gets stable content-derived ones, a chunked document collapses to one
+  result, and a rejecting embedder degrades to lexical-only. Plus the guards whose
+  failure mode is a lost document rather than an error: a source minting one id for two
+  documents, a vector for a chunk that does not exist, and the memoisation contract that
+  keeps a set of sources indexed once.
+- **`emails.test.ts` (9)** — loose adapter smoke tests with an injected embedder that
   serves the committed query vectors. A conceptual query with no lexical overlap finds
   the conveyancing thread; an exact address still lands first; a nonsense query returns
-  `[]`; both indexes are built once per process; a block of identical emails does not
+  `[]`; a block of identical emails does not
   take every top slot; a rejecting embedder falls back to lexical-only instead of
   throwing.
-- **`vector-artifact.test.ts` (9)** — the staleness contract, pinned directly: a changed
+- **`vector-artifact.test.ts` (11)** — the staleness contract, pinned directly: a changed
   corpus, model, or dimension count throws with a rebuild instruction, and the base64
   Float32 packing round-trips. Its failure mode is a search that keeps working while
   ranking against vectors for text that no longer exists, so it is not left to the
@@ -265,6 +291,72 @@ Two seams, plus two mechanisms that would otherwise fail silently:
 is a normalised dot product and a sort; it is covered through the adapter, and giving it
 its own seam would test structure rather than behaviour. A deliberate departure from
 mirroring the BM25 module one-for-one.
+
+## Document sources
+
+Issue #6 finished the split this document started. The rankers were already
+corpus-agnostic; what was still email-bound was *identity*, and identity is what the
+artifact on disk is keyed by.
+
+A document id is now namespaced by its source:
+
+```
+document id  = `${sourceType}:${nativeId}`   // email:email_1759404204639_rcsddgue6
+chunk id     = `${documentId}#${n}`          // email:email_1759404204639_rcsddgue6#2
+```
+
+Uniqueness across sources is structural rather than hoped for — two sources may mint the
+same native id and still be two documents — and any id answers "what kind of thing is
+this?" without a lookup. `:` and `#` are reserved; a native id containing either is
+rejected at index time with the offending id in the message, because the failure it
+would otherwise cause is a document silently missing from every result. Formatting and
+parsing live in `document-id.ts` and nowhere else.
+
+A source with stable ids of its own keeps them: the 547 email ids stay greppable against
+`emails.json`, and a content-addressed id would move every time a body was edited,
+breaking any stored reference to it. A source with no identity of its own — a text file
+dropped into a folder, a scraped page — gets a truncated SHA-256 of its text instead, so
+it can join the corpus without a registry handing out identifiers. Hashing is the
+fallback, not the rule.
+
+`documents.ts` owns the registry and the single public entry point. A source is:
+
+```ts
+type DocumentSource = {
+  sourceType: SourceType;                    // "email"
+  fieldWeights: Record<string, number>;      // this source's property
+  hasNativeIds?: boolean;                    // false → ids are hashed from chunkText
+  all: () => SourceDocument[];
+  chunk: (opts: { document: SearchDocument }) => DocumentChunk[];
+  vectors?: (opts: { chunks: DocumentChunk[] }) => Array<{ id: string; vector: Float32Array }>;
+};
+```
+
+The layer mints ids, unions the sources into one BM25F index (weights merged, with a
+disagreement over a shared field name an error rather than a silent overwrite) and one
+semantic index, and collapses chunk hits back to documents. It never inspects a
+document's content: chunking generalizes by delegation, and the email chunking policy is
+unchanged and now lives behind `emailSource.chunk`.
+
+Adding a second kind of document is: write an adapter, register it, rebuild the vectors.
+No ranking, chunking, or fusion code moves — `bm25.ts`, `semantic.ts`, and `rrf.ts` took
+a zero diff. Genericity is demonstrated by fake in-memory sources in `documents.test.ts`;
+email remains the only registered source, and relevance is unchanged.
+
+### Left for the second source
+
+Two things are correct with one source and want a decision the moment there are two:
+
+- **BM25F length statistics are pooled.** Weights are per source, but the index is one
+  index, so `avgFieldLength` is computed across every source's documents. A source with
+  no `subject` field would push a mass of zero-length subjects into that average and
+  quietly demote subject matches for email. Wants either per-source length normalisation
+  or source-namespaced field names.
+- **`sourceTypes` filters the candidate pool, not the corpus.** `searchEmails` narrows to
+  email before the limit, so `limit` still means "this many emails" — but the pool it
+  narrows is a fixed size, so a heavily mixed corpus could under-fill it. That is a
+  relevance cost, not a correctness one, and the pool sizes are worth tuning against a
+  real second source rather than a guess.
 
 ## Non-goals
 
