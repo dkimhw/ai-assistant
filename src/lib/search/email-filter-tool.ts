@@ -129,7 +129,23 @@ export const emailFilterInputSchema = z
   })
   .refine(
     (criteria) => Object.values(criteria).some((value) => value !== undefined),
-    { message: "give at least one criterion" }
+    {
+      // The rule is invisible to the model: a `.refine` does not survive into
+      // the JSON Schema the way a `.regex` does, so the only way to find it is
+      // to break it — and breaking it costs a step out of a bounded turn.
+      //
+      // The message is therefore written as a recovery instruction rather than
+      // as a complaint. "give at least one criterion" tells a model what it did
+      // wrong and leaves it to guess the fix, which is how one wasted step
+      // becomes two; naming the fields and naming the alternative tool lets the
+      // next call be right. The cost of a rule that can only be discovered by
+      // failing is at least bounded at a single failure.
+      message:
+        "filterEmails needs at least one of `from`, `to`, `after`, `before`, " +
+        "or `contains`. It has no 'everything' mode. If you wanted a general " +
+        "look at recent email, pass an `after` date; if you were searching for " +
+        "a topic, use searchEmails instead.",
+    }
   );
 
 export type EmailFilterInput = z.infer<typeof emailFilterInputSchema>;

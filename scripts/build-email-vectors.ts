@@ -31,6 +31,16 @@ import { emailSource, getAllEmails } from "../src/lib/search/emails";
  */
 
 /**
+ * Ten minutes: a bound on a hung connection, not a performance target. The whole
+ * corpus is a few hundred thousand tokens and this normally finishes in well
+ * under a minute, so anything approaching this limit has stopped making
+ * progress. Generous because the cost of cutting a real build short is a wasted
+ * run and a wasted spend, while the cost of waiting is that someone watches a
+ * terminal for a bit longer.
+ */
+const BUILD_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
  * Queries the test suite embeds. Each one is a real embedding of the exact
  * string, so `emails.test.ts` exercises genuine semantic retrieval offline.
  * Adding a test query means adding it here and re-running the build.
@@ -83,6 +93,11 @@ const main = async () => {
   const embedder = createOpenAIEmbedder({
     model: DEFAULT_EMBEDDING_MODEL,
     dimensions: DEFAULT_EMBEDDING_DIMENSIONS,
+    // The embedder defaults to a timeout sized for a single query inside a
+    // search request. This call embeds the whole corpus in one `embedMany`, so
+    // it needs a budget of a different order — and unlike a search, there is no
+    // degraded result to fall back to if it gives up early.
+    timeoutMs: BUILD_TIMEOUT_MS,
   });
 
   const emails = getAllEmails();

@@ -87,10 +87,14 @@ const stream = createUIMessageStream<MyMessage>({
       messages,
       tools: chatTools,
       stopWhen: stepCountIs(MAX_STEPS),
+      abortSignal: req.signal,
+      prepareStep: ({ stepNumber }) =>
+        stepNumber === MAX_STEPS - 1 ? { toolChoice: "none" } : undefined,
     });
     writer.merge(result.toUIMessageStream({ sendSources: true, sendReasoning: true }));
   },
-  onFinish: async ({ responseMessage }) => { /* persist */ },
+  onError: (error) => { /* log; return a coarse string */ },
+  onFinish: async ({ responseMessage, isAborted }) => { /* persist if non-empty */ },
 });
 return createUIMessageStreamResponse({ stream });
 ```
@@ -105,8 +109,18 @@ persistence and custom data parts to interleave with the model output.
 
 Persistence happens *inside* the stream: a new chat is created in `execute`, and
 the assistant reply is appended in `onFinish`, so a disconnect still records the
-exchange. Title generation for a new chat is kicked off early, kept as a promise,
-and awaited at the end of `execute` so it never blocks the first token.
+exchange. A message with no content is the one thing not persisted — an abort
+before the first token would otherwise write an empty assistant turn that is
+replayed forever. Title generation for a new chat is kicked off early, kept as a
+promise, and awaited at the end of `execute` so it never blocks the first token.
+
+Four things bound one turn, and they are separate concerns: `stopWhen` caps the
+step count, `abortSignal` ends a turn the client walked away from, `prepareStep`
+withdraws the tools for the final step so the turn lands on prose instead of
+stopping after a tool call, and the search budget in the system prompt stops a
+question with no retrieval target from spending the ceiling in the first place.
+`onError` logs the real error and returns a coarse string — a provider error can
+carry key fragments, and that string is rendered in the transcript.
 
 ### Message Parts System
 

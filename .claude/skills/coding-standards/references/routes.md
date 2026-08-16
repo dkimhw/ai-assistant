@@ -66,15 +66,48 @@ identity.
   and carries the custom `data-frontend-action` part. Pass it as the generic to
   `safeValidateUIMessages<MyMessage>` and `createUIMessageStream<MyMessage>`.
 - **Persist inside the stream, not around it.** Writes happen in `execute` and
-  `onFinish` so a client disconnect still records the exchange.
+  `onFinish` so a client disconnect still records the exchange. Persist nothing
+  *empty*, though — an abort before the first token would otherwise write a
+  blank assistant message that replays forever as a gap in the conversation.
 - **Fire-and-await background work.** Title generation starts early, is kept as a
   promise, and is awaited at the end of `execute` — don't block the first token
   on it.
-- Set `export const maxDuration` on any streaming handler.
+- **Handle errors explicitly.** `createUIMessageStream`'s default `onError`
+  returns "An error occurred." and drops the error entirely, so nothing reaches
+  the log. Log the real one; return something coarse. Provider errors can carry
+  key fragments and internal URLs, and the returned string is rendered in the
+  user's transcript.
 
 Custom UI signals go over `writer.write({ type: "data-...", transient: true })`.
 `transient` means it isn't persisted into message history; use it for anything
 that's an instruction to the UI rather than conversation content.
+
+### Bounding a streaming turn
+
+**Don't reach for `maxDuration`.** It was removed from the chat route in
+`2b77713` after being confirmed inert: this app runs as a long-lived Node
+process, so nothing enforces a per-request function timeout, and the build's
+`functions-config-manifest.json` came out empty. Adding it back is cargo cult
+until the app moves onto a platform that deploys routes as functions — at which
+point it returns, sized for a whole tool loop rather than one model call.
+
+What that leaves is four separate bounds, none of which substitutes for another.
+A tool-calling loop needs all of them:
+
+| Bound | Mechanism | Stops |
+| ----- | --------- | ------ |
+| Step count | `stopWhen: stepCountIs(n)` | An endless tool loop |
+| Landing | `prepareStep` → `toolChoice: "none"` on the last step | A turn ending on a tool call with no reply |
+| Client gone | `abortSignal: req.signal` | Work nobody is waiting for |
+| Provider hang | `AbortSignal.timeout()` on each provider call | One dead connection hanging the request |
+
+The last one is the easiest to forget and the worst to omit, because there is no
+platform timeout underneath to catch it — see `reranker.ts` and `embedder.ts`.
+Prefer a call that degrades on timeout (fall back to a worse ranking) over one
+that throws, wherever the stage is optional.
+
+`stopWhen` on its own is a guillotine: it ends the turn after the Nth step
+whatever that step was. Pair it with `prepareStep` so the turn lands on prose.
 
 ## Validation
 

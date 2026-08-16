@@ -182,16 +182,35 @@ const conversationContext = (opts: {
     .slice(-EMAIL_SEARCH_HISTORY_MESSAGES);
 
 /**
+ * Memoised because "is there a reranker" is a fact about the environment, not
+ * about the query. `undefined` is wrapped rather than stored bare: it is a
+ * legitimate answer — "there is no reranker" — and an unwrapped one is
+ * indistinguishable from "not resolved yet", so the cache would miss on exactly
+ * the calls it exists for.
+ */
+let cachedReranker: { value: Reranker | undefined } | undefined;
+
+/**
  * The configured reranker, or none if there isn't one.
  *
- * Resolved per call rather than at import time — where a missing key would take
- * down the whole tool set — and a failure to resolve one degrades exactly as a
- * failure to *use* one does. Every other stage of this pipeline keeps working
- * when its provider is unavailable, and "no API key" is the most likely way for
- * that to happen: a dev or eval environment without one should still get
+ * Resolved on first use rather than at import time — where a missing key would
+ * take down the whole tool set — and a failure to resolve one degrades exactly
+ * as a failure to *use* one does. Every other stage of this pipeline keeps
+ * working when its provider is unavailable, and "no API key" is the most likely
+ * way for that to happen: a dev or eval environment without one should still get
  * lexical results rather than a tool error.
+ *
+ * It used to resolve on *every* call, which built a fresh provider client per
+ * search and, with no key configured, re-threw and re-logged the identical
+ * warning on every query — turning a one-line fact about the environment into
+ * log noise proportional to traffic.
  */
 const configuredReranker = (): Reranker | undefined => {
+  cachedReranker ??= { value: resolveReranker() };
+  return cachedReranker.value;
+};
+
+const resolveReranker = (): Reranker | undefined => {
   try {
     return createOpenAIReranker();
   } catch (error) {

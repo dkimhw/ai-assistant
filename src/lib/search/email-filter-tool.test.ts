@@ -320,6 +320,23 @@ describe("emailFilterInputSchema", () => {
     expect(accepts({})).toBe(false);
   });
 
+  // The rule is invisible in the JSON Schema the model is shown, so the only
+  // way it learns the rule is by reading this message after failing. That makes
+  // the wording load-bearing in a way a rejection message usually is not: it is
+  // the difference between one wasted step and a sequence of them. Pinned on
+  // content rather than on exact prose, so it can be reworded but not gutted.
+  it("tells a rejected call which criteria exist and what to use instead", () => {
+    const result = emailFilterInputSchema.safeParse({});
+    const message = result.success
+      ? ""
+      : result.error.issues.map((issue) => issue.message).join(" ");
+
+    for (const criterion of ["from", "to", "after", "before", "contains"]) {
+      expect(message).toContain(criterion);
+    }
+    expect(message).toContain("searchEmails");
+  });
+
   it("rejects criteria that are present but empty", () => {
     expect(accepts({ from: "" })).toBe(false);
   });

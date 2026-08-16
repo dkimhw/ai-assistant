@@ -158,8 +158,18 @@ export const Chat = (props: { chat: DB.Chat | null }) => {
                             <Response>{part.text}</Response>
                           </MessageContent>
                         </Message>
+                        {/*
+                          Both halves matter: the last text part of the last
+                          message. This compared a part index against
+                          `messages.length`, which is a different array — so the
+                          actions appeared next to whichever part happened to sit
+                          at that index, and on any message long enough to have
+                          one. Retry then re-ran the conversation from a button
+                          attached to a message in the middle of it.
+                        */}
                         {message.role === "assistant" &&
-                          i === messages.length - 1 && (
+                          i === message.parts.length - 1 &&
+                          message.id === messages.at(-1)?.id && (
                             <Actions className="mt-2">
                               <Action
                                 onClick={() => regenerate()}
