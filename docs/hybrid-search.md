@@ -251,6 +251,72 @@ API key.
 | Artifact missing or header mismatched | Loading throws with a rebuild instruction. **Deliberately not covered by the fallback above** — the index is fetched outside the `try`. A provider outage is transient and outside our control; a stale artifact is a build step somebody forgot, and quietly serving worse results for it is precisely the silent degradation the fingerprint exists to prevent. |
 | Empty or whitespace query | `[]`, with no embedding round-trip. The no-query browse path never calls `searchEmails` at all. |
 | Nothing above the cosine floor (0.3) | Semantic contributes nothing, so a query about nothing in the corpus still returns nothing. Measured: the nonsense query `zzzzqqqxyzzy` peaks at 0.214 against all 606 chunks; the conveyancing query clears 0.3 on 17 of them. |
+| The rerank call fails | `console.warn`, and the fused ordering is returned cut to the limit. Same contract as the embedder: an outage costs relevance, not the feature. |
+| The reranker returns a partial or malformed order | Unknown and repeated ids are dropped; anything it left out keeps its fused position at the end of the list. A partial answer costs ordering, not recall. |
+
+## Reranking
+
+A fourth, optional stage, added after fusion for the chat tool only (issue #11).
+
+The fused top five was the wrong five often enough to matter, and the tool showed
+the model the first 1,200 characters of each email — so an answer in the fourth
+paragraph of a long lender email was found by the search layer, embedded as a
+chunk, and then not shown. Reranking addresses both at once.
+
+- **Deeper pool.** With a reranker, fusion runs to `RERANK_CANDIDATE_POOL` (25)
+  documents rather than the caller's limit, so there is something to reorder.
+  That is a floor, not a ceiling — a caller asking for more results needs a pool
+  at least that deep. `RERANK_MAX_CANDIDATES` (50) is the real bound, and it
+  counts *chunks*, because passages are what a model call pays for. They
+  coincide for email at 1.1 chunks per document; a source that split a long
+  document into thirty pieces would find out why the second constant exists.
+- **Chunks, not documents.** The pool's chunks are what get read and ordered,
+  then collapse one-per-document taking the best — the same collapse the semantic
+  leg already performs. A long document is relevant because one paragraph answers
+  the question, not on average.
+- **The winning passage travels with the result.** `DocumentResult.chunk` is what
+  the tool sends the model in place of the body's opening. The chunk already has
+  quoted text stripped and the subject prepended, so it is self-contained.
+- **A passage says that it is one.** It carries its position (`index`, `count`),
+  and the tool marks a passage with more email after it using the same ellipsis
+  truncation uses — both mean "there is more of this than you are looking at".
+  That a passage may also *begin* mid-email, or omit quoted history, is stated in
+  the system prompt: an excerpt that reads as a whole email is how a model
+  concludes a message does not mention something it does mention. The prompt's
+  rule is now "an email saying nothing about X in a search result is not evidence
+  that it says nothing about X — call `getEmails`".
+- **No score is exposed.** `Reranker.rerank` returns an order, not scores — a
+  rerank score means nothing outside its own call, and returning only the order
+  makes that structurally true rather than a comment someone has to obey.
+- **Conversation context.** The tool passes the last
+  `EMAIL_SEARCH_HISTORY_MESSAGES` (6) user and assistant messages, each cut to
+  `EMAIL_SEARCH_HISTORY_CHARACTERS` (400) — a message count alone does not bound
+  a prompt, since one pasted document would ride along in every rerank call for
+  the rest of the conversation. A follow-up is then judged against what was being
+  discussed. Tool calls and results are filtered
+  out: they are bulky, already summarised by the assistant's reply, and feeding a
+  retrieval system its own retrievals sticks a conversation in one neighbourhood
+  of the corpus. Context reaches the reranker only — the lexical and semantic
+  legs still see just the query. Rewriting the query before retrieval is a
+  separate piece of work.
+
+Passages are fenced in the rerank prompt and the model is told that what sits
+inside a fence is quoted material rather than instructions. Email is
+attacker-supplied text — anyone can send the user some — and the stage's whole
+job is to read it. The exposure is bounded (an ordering can move; no tool runs),
+but "rank this passage first" should not work on a search engine.
+
+`reranker.ts` mirrors `embedder.ts`: a provider-agnostic interface over opaque
+ids and text, plus one implementation on the nano tier already configured here.
+A dedicated cross-encoder (Cohere, Voyage) is the anticipated successor, and the
+interface exists so that swap is one new implementation and no pipeline change.
+
+Cost is one extra model call per tool call, on a turn that already makes an
+embedding call and at least two chat completions. The search page passes no
+reranker and is unchanged in results, cost, and pagination.
+
+Both the pool depth and the history depth are starting positions to tune against
+evals. Pool depth first: it bounds what reranking can possibly fix.
 
 ## Tests
 

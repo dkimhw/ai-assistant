@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   getDocument,
+  RERANK_CANDIDATE_POOL,
+  RERANK_MAX_CANDIDATES,
   searchDocuments,
   type DocumentSource,
   type SourceDocument,
 } from "@/lib/search/documents";
 import type { Embedder } from "@/lib/search/embedder";
+import type { RerankCandidate, Reranker } from "@/lib/search/reranker";
 
 /**
  * Cross-source behaviour, exercised through the one public seam with in-memory
@@ -54,6 +57,37 @@ const noEmbedder: Embedder = {
 
 const ids = (results: Array<{ document: { id: string } }>) =>
   results.map((result) => result.document.id);
+
+/**
+ * A reranker that reorders deterministically and records what it was asked, so
+ * both halves of the contract — the order out and the candidates in — are
+ * assertable without a network call.
+ */
+const fakeReranker = (opts?: {
+  order?: (candidates: RerankCandidate[]) => RerankCandidate[];
+}) => {
+  const calls: Array<{ query: string; candidates: RerankCandidate[] }> = [];
+
+  const reranker: Reranker = {
+    model: "fake",
+    rerank: async ({ query, candidates }) => {
+      calls.push({ query, candidates });
+      return (opts?.order ?? ((given) => given))(candidates).map(
+        (candidate) => candidate.id
+      );
+    },
+  };
+
+  return { calls, reranker };
+};
+
+/** Stands in for a reranking provider that is down. */
+const offlineReranker: Reranker = {
+  model: "offline",
+  rerank: async () => {
+    throw new Error("rerank provider unavailable");
+  },
+};
 
 describe("searchDocuments", () => {
   it("keeps two sources apart when they mint the same native id", async () => {
@@ -365,6 +399,214 @@ describe("searchDocuments", () => {
     await expect(
       searchDocuments({ query: "text", sources, embedder: noEmbedder })
     ).rejects.toThrow(/body/);
+  });
+});
+
+describe("searchDocuments with a reranker", () => {
+  /** Fused order is a, then b: same terms, shorter document ranks higher on b. */
+  const otters = () => [
+    source({
+      sourceType: "note",
+      documents: documentsFrom([
+        ["a", "otter otter otter"],
+        ["b", "otter otter"],
+      ]),
+    }),
+  ];
+
+  const chunked = (opts: { texts: string[] }): DocumentSource => ({
+    ...source({
+      sourceType: "note",
+      documents: documentsFrom([["long", opts.texts.join(" ")]]),
+    }),
+    chunk: ({ document }) =>
+      opts.texts.map((text, index) => ({
+        id: `${document.id}#${index}`,
+        text,
+      })),
+  });
+
+  it("reorders results away from the fused order", async () => {
+    const fused = await searchDocuments({
+      query: "otter",
+      sources: otters(),
+      embedder: noEmbedder,
+    });
+
+    const { reranker } = fakeReranker({
+      order: (candidates) => [...candidates].reverse(),
+    });
+
+    const reranked = await searchDocuments({
+      query: "otter",
+      sources: otters(),
+      embedder: noEmbedder,
+      reranker,
+    });
+
+    expect(ids(fused)).toEqual(["note:a", "note:b"]);
+    expect(ids(reranked)).toEqual(["note:b", "note:a"]);
+  });
+
+  it("leaves results without a chunk when no reranker is passed", async () => {
+    const results = await searchDocuments({
+      query: "otter",
+      sources: otters(),
+      embedder: noEmbedder,
+    });
+
+    expect(results.every((result) => result.chunk === undefined)).toBe(true);
+  });
+
+  it("returns the chunk that won, not the document's first", async () => {
+    const { reranker } = fakeReranker({
+      // The third chunk, which no other stage would have singled out.
+      order: (candidates) => [candidates[2], ...candidates],
+    });
+
+    const [result] = await searchDocuments({
+      query: "badger",
+      sources: [
+        chunked({
+          texts: ["badger opening", "badger middle", "badger buried answer"],
+        }),
+      ],
+      embedder: noEmbedder,
+      reranker,
+    });
+
+    expect(result.chunk?.text).toBe("badger buried answer");
+    expect(result.chunk?.id).toBe("note:long#2");
+  });
+
+  it("still returns one result per document after reranking chunks", async () => {
+    const { reranker } = fakeReranker();
+
+    const results = await searchDocuments({
+      query: "badger",
+      sources: [
+        chunked({ texts: ["badger one", "badger two", "badger three"] }),
+      ],
+      embedder: noEmbedder,
+      reranker,
+    });
+
+    expect(results).toHaveLength(1);
+  });
+
+  it("hands the reranker a deeper pool than the caller asked for", async () => {
+    const { calls, reranker } = fakeReranker();
+
+    const results = await searchDocuments({
+      query: "otter",
+      limit: 2,
+      sources: [
+        source({
+          sourceType: "note",
+          documents: documentsFrom(
+            Array.from({ length: 30 }, (_, index) => [
+              `n${index}`,
+              `otter number ${index}`,
+            ])
+          ),
+        }),
+      ],
+      embedder: noEmbedder,
+      reranker,
+    });
+
+    expect(calls[0].candidates).toHaveLength(RERANK_CANDIDATE_POOL);
+    // …and the caller still gets what it asked for.
+    expect(results).toHaveLength(2);
+  });
+
+  it("tells a result where its chunk sits among the document's chunks", async () => {
+    // Without this a caller cannot tell an excerpt from a whole document, and
+    // a passage from the middle reads as a document that simply omits the
+    // answer.
+    const { reranker } = fakeReranker({
+      order: (candidates) => [candidates[2], ...candidates],
+    });
+
+    const [result] = await searchDocuments({
+      query: "badger",
+      sources: [
+        chunked({ texts: ["badger one", "badger two", "badger three"] }),
+      ],
+      embedder: noEmbedder,
+      reranker,
+    });
+
+    expect(result.chunk?.index).toBe(2);
+    expect(result.chunk?.count).toBe(3);
+  });
+
+  it("bounds the passages one rerank call reads, not just the documents", async () => {
+    // The pool counts documents; a source that chunks finely would blow past
+    // its intent, because the model pays per passage.
+    const { calls, reranker } = fakeReranker();
+
+    await searchDocuments({
+      query: "otter",
+      limit: 5,
+      sources: [
+        {
+          ...source({
+            sourceType: "note",
+            documents: documentsFrom(
+              Array.from({ length: 30 }, (_, index) => [
+                `n${index}`,
+                `otter number ${index}`,
+              ])
+            ),
+          }),
+          chunk: ({ document }) =>
+            Array.from({ length: 5 }, (_, index) => ({
+              id: `${document.id}#${index}`,
+              text: `otter passage ${index}`,
+            })),
+        },
+      ],
+      embedder: noEmbedder,
+      reranker,
+    });
+
+    expect(calls[0].candidates.length).toBeLessThanOrEqual(
+      RERANK_MAX_CANDIDATES
+    );
+  });
+
+  it("falls back to the fused ordering when the reranker throws", async () => {
+    const fused = await searchDocuments({
+      query: "otter",
+      sources: otters(),
+      embedder: noEmbedder,
+    });
+
+    const degraded = await searchDocuments({
+      query: "otter",
+      sources: otters(),
+      embedder: noEmbedder,
+      reranker: offlineReranker,
+    });
+
+    expect(ids(degraded)).toEqual(ids(fused));
+  });
+
+  it("respects the caller's limit when the pool is deeper than it", async () => {
+    const { reranker } = fakeReranker({
+      order: (candidates) => [...candidates].reverse(),
+    });
+
+    const results = await searchDocuments({
+      query: "otter",
+      limit: 1,
+      sources: otters(),
+      embedder: noEmbedder,
+      reranker,
+    });
+
+    expect(ids(results)).toEqual(["note:b"]);
   });
 });
 

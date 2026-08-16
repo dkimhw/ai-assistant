@@ -9,6 +9,7 @@ import {
 } from "@/lib/search/document-id";
 import { createOpenAIEmbedder, type Embedder } from "@/lib/search/embedder";
 import { fuseRRF } from "@/lib/search/rrf";
+import type { RerankCandidate, Reranker } from "@/lib/search/reranker";
 import {
   buildSemanticIndex,
   searchSemantic,
@@ -98,10 +99,34 @@ export type DocumentSource = {
   }>;
 };
 
+/**
+ * A chunk, plus where it sits among its document's chunks.
+ *
+ * The position is here because a passage from the middle of a document is not
+ * the document, and a caller showing one to a model has to be able to say so.
+ * Without it, an excerpt reads as a complete document that simply does not
+ * mention what was asked about.
+ */
+export type RankedChunk = DocumentChunk & {
+  /** 0-based. */
+  index: number;
+  /** How many chunks the document has in total; 1 means the chunk is the document. */
+  count: number;
+};
+
 export type DocumentResult = {
   document: SearchDocument;
   /** A fused RRF score: an ordering signal with no absolute meaning. */
   score: number;
+  /**
+   * The chunk this document was ranked on — present only when a reranker ran.
+   * It is what a caller should show a model in place of the document's opening,
+   * because on a long document the passage that matched is often not the start.
+   *
+   * The rerank score itself is deliberately absent. It has no meaning outside
+   * its own call, and the ordering already encodes everything it says.
+   */
+  chunk?: RankedChunk;
 };
 
 /**
@@ -140,10 +165,38 @@ const MIN_CANDIDATE_POOL = 40;
  */
 const MAX_SEMANTIC_POOL = 50;
 
+/**
+ * How many fused documents a reranker is shown, before the caller's limit is
+ * applied. Deep enough that reranking has real material to reorder rather than
+ * being handed the same five it would have returned; shallow enough that one
+ * model call reads a bounded amount of text.
+ *
+ * A starting position to tune against evals, not a claim — and the first knob
+ * worth tuning, because it bounds what reranking can possibly fix.
+ *
+ * A floor rather than a ceiling when a caller asks for more results than this:
+ * a pool shallower than the limit could not fill it. `RERANK_MAX_CANDIDATES` is
+ * what actually bounds the size of the call.
+ */
+export const RERANK_CANDIDATE_POOL = 25;
+
+/**
+ * The hard bound on how many passages one rerank call reads, whatever the pool
+ * works out to. The pool counts documents; this counts the chunks they produce,
+ * which is what the model actually pays for — a source chunking finely, or a
+ * caller asking for a large limit, would otherwise send an unbounded prompt.
+ *
+ * Sized to sit just above the pool, since email averages 1.1 chunks per
+ * document: it is a backstop, not a working limit. Another starting position.
+ */
+export const RERANK_MAX_CANDIDATES = 50;
+
 const DEFAULT_LIMIT = 10;
 
 type Corpus = {
   byId: Map<DocumentId, SearchDocument>;
+  /** Which source owns a document — how a result gets back to its chunks. */
+  sourceByType: Map<SourceType, DocumentSource>;
   index: BM25Index;
   /**
    * Built on first *semantic* use, not with the rest of the corpus: it reads and
@@ -288,6 +341,9 @@ const buildCorpus = (sources: DocumentSource[]): Corpus => {
 
   return {
     byId: new Map(documents.map((document) => [document.id, document])),
+    sourceByType: new Map(
+      sources.map((source) => [source.sourceType, source] as const)
+    ),
     index: buildBM25Index({
       documents: documents.map((document) => ({
         id: document.id,
@@ -349,6 +405,95 @@ const semanticDocumentIds = async (opts: {
 };
 
 /**
+ * Reorder fused results by reading their text.
+ *
+ * This stage lives here rather than in a caller because this is where chunk ids
+ * and chunk text already exist: a caller doing it would have to re-derive a
+ * source's chunking policy, which is precisely the knowledge the adapter
+ * boundary keeps in one place.
+ *
+ * Chunks are reranked and then collapsed to documents, each taking its best
+ * chunk — the same collapse the semantic leg performs. That is the point on a
+ * long document: it is relevant because one of its paragraphs answers the
+ * question, not on average.
+ *
+ * Anything the reranker leaves out keeps its fused position at the end of the
+ * list, so a partial answer costs ordering rather than recall.
+ */
+const rerankResults = async (opts: {
+  query: string;
+  context?: string[];
+  reranker: Reranker;
+  corpus: Corpus;
+  results: DocumentResult[];
+  limit: number;
+}): Promise<DocumentResult[]> => {
+  const rankedById = new Map<string, RankedChunk>();
+  const firstChunkOf = new Map<DocumentId, RankedChunk>();
+  const candidates: RerankCandidate[] = [];
+
+  for (const result of opts.results) {
+    const source = opts.corpus.sourceByType.get(result.document.sourceType);
+    if (!source) continue;
+
+    const chunks = source.chunk({ document: result.document });
+
+    chunks.forEach((chunk, index) => {
+      const ranked = { ...chunk, index, count: chunks.length };
+      rankedById.set(chunk.id, ranked);
+      if (index === 0) firstChunkOf.set(result.document.id, ranked);
+      candidates.push({ id: chunk.id, text: chunk.text });
+    });
+
+    // The pool bounds *documents*; this bounds the text one model call reads,
+    // which is the thing that actually costs money and context. They coincide
+    // for email at 1.1 chunks per document, but a source that split a long
+    // document into thirty pieces would blow past the pool's intent otherwise.
+    if (candidates.length >= RERANK_MAX_CANDIDATES) break;
+  }
+
+  candidates.length = Math.min(candidates.length, RERANK_MAX_CANDIDATES);
+
+  const orderedChunkIds = await opts.reranker.rerank({
+    query: opts.query,
+    context: opts.context,
+    candidates,
+  });
+
+  const resultsByDocument = new Map(
+    opts.results.map((result) => [result.document.id, result] as const)
+  );
+
+  const reranked: DocumentResult[] = [];
+  const taken = new Set<DocumentId>();
+
+  for (const chunkId of orderedChunkIds) {
+    const documentId = documentIdOfChunk(chunkId);
+    if (taken.has(documentId)) continue;
+
+    const result = resultsByDocument.get(documentId);
+    if (!result) continue;
+
+    taken.add(documentId);
+    reranked.push({ ...result, chunk: rankedById.get(chunkId) });
+
+    if (reranked.length >= opts.limit) return reranked;
+  }
+
+  // Whatever the reranker did not mention, in the order fusion left it. Its
+  // first chunk stands in for a winner it was never given: that is the opening
+  // of the document, which is what a caller would have shown anyway.
+  for (const result of opts.results) {
+    if (reranked.length >= opts.limit) break;
+    if (taken.has(result.document.id)) continue;
+
+    reranked.push({ ...result, chunk: firstChunkOf.get(result.document.id) });
+  }
+
+  return reranked;
+};
+
+/**
  * Hybrid search across every registered source.
  *
  * The returned score is a fused RRF score. Like the BM25 score it replaced, it
@@ -363,10 +508,27 @@ const semanticDocumentIds = async (opts: {
  * throws. A provider outage is transient and outside our control; a stale
  * artifact is a build step somebody forgot, and quietly serving worse results
  * for it is exactly the silent degradation the fingerprint exists to prevent.
+ *
+ * Passing a `reranker` adds a stage after fusion: a deeper pool of candidates is
+ * read and reordered, and each result gains the chunk it won on. It is off
+ * unless asked for, so a caller pays for a model call only by requesting one —
+ * the search page does not, the chat tool does. A reranker that fails degrades
+ * the same way the embedder does: log, and return the fused ordering.
  */
 export const searchDocuments = async (opts: {
   query: string;
   limit?: number;
+  /**
+   * Off unless passed. Injectable for the same reason `embedder` is: tests use a
+   * fake and never hit the network.
+   */
+  reranker?: Reranker;
+  /**
+   * Recent conversation, oldest first, passed to the reranker so a follow-up is
+   * judged against what was being discussed. Ignored without a reranker; the
+   * lexical and semantic legs deliberately see only the query.
+   */
+  rerankContext?: string[];
   /** Defaults to the registry. Injectable for the same reason `embedder` is. */
   sources?: DocumentSource[];
   /**
@@ -429,12 +591,41 @@ export const searchDocuments = async (opts: {
     );
   }
 
-  return fuseRRF({ rankings: [lexicalIds, semanticIds], limit }).flatMap(
-    (result) => {
-      const document = corpus.byId.get(result.id);
-      return document ? [{ document, score: result.score }] : [];
-    }
-  );
+  // Reranking reads a deeper pool than the caller asked for, then cuts back to
+  // the limit — otherwise it would be handed exactly the results it is meant to
+  // be able to improve on.
+  const fusedLimit = opts.reranker
+    ? Math.max(limit, RERANK_CANDIDATE_POOL)
+    : limit;
+
+  const fused = fuseRRF({
+    rankings: [lexicalIds, semanticIds],
+    limit: fusedLimit,
+  }).flatMap((result) => {
+    const document = corpus.byId.get(result.id);
+    return document ? [{ document, score: result.score }] : [];
+  });
+
+  if (!opts.reranker) return fused;
+
+  try {
+    return await rerankResults({
+      query: opts.query,
+      context: opts.rerankContext,
+      reranker: opts.reranker,
+      corpus,
+      results: fused,
+      limit,
+    });
+  } catch (error) {
+    // Deliberate degradation, as with the embedder: an outage costs relevance,
+    // not the feature.
+    console.warn(
+      "[search] reranking unavailable, falling back to the fused ordering:",
+      error instanceof Error ? error.message : error
+    );
+    return fused.slice(0, limit);
+  }
 };
 
 /**
