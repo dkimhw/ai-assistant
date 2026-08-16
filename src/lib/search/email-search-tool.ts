@@ -75,10 +75,17 @@ export type EmailSearchResult = {
   body: string;
 };
 
-const truncate = (text: string) =>
-  text.length <= EMAIL_SEARCH_BODY_CHARACTERS
+/**
+ * Shared with the filter tool rather than reimplemented there: one budget, one
+ * ellipsis, so a body the model sees is cut the same way whichever tool found
+ * it. `getEmails` deliberately does not use this — see `email-get-tool.ts`.
+ */
+export const truncateBody = (text: string, opts?: { limit?: number }) => {
+  const limit = opts?.limit ?? EMAIL_SEARCH_BODY_CHARACTERS;
+  return text.length <= limit
     ? text
-    : `${text.slice(0, EMAIL_SEARCH_BODY_CHARACTERS - 1).trimEnd()}…`;
+    : `${text.slice(0, limit - 1).trimEnd()}…`;
+};
 
 /**
  * Takes the embedder rather than reaching for one, so tests exercise the real
@@ -102,7 +109,7 @@ export const createEmailSearchTool = (opts?: { embedder?: Embedder }) =>
         subject: email.subject,
         from: email.from,
         timestamp: email.timestamp,
-        body: truncate(email.body),
+        body: truncateBody(email.body),
       }));
     },
   });

@@ -42,6 +42,49 @@ const persistedToolPart = {
   ],
 };
 
+/** The same, for a completed filter. Note the object output, not an array. */
+const persistedFilterPart = {
+  type: "tool-filterEmails",
+  toolCallId: "call-2",
+  state: "output-available",
+  input: { from: "david.xu", before: "2024-06-01" },
+  output: {
+    totalMatches: 2,
+    emails: [
+      {
+        id: "e_0417",
+        subject: "Rate lock confirmation",
+        from: "david.xu@firsthomemortgages.co.uk",
+        to: "sarah.chen.personal@gmail.com",
+        timestamp: "2024-03-04T09:12:00Z",
+        body: "We have locked your rate at 4.6% for 60 days.",
+      },
+    ],
+  },
+};
+
+/** And for a completed fetch. */
+const persistedGetPart = {
+  type: "tool-getEmails",
+  toolCallId: "call-3",
+  state: "output-available",
+  input: { ids: ["e_0417"], expandThread: true },
+  output: {
+    emails: [
+      {
+        id: "e_0417",
+        subject: "Rate lock confirmation",
+        from: "david.xu@firsthomemortgages.co.uk",
+        to: "sarah.chen.personal@gmail.com",
+        timestamp: "2024-03-04T09:12:00Z",
+        threadId: "t_0417",
+        body: "We have locked your rate at 4.6% for 60 days.",
+      },
+    ],
+    missingIds: [],
+  },
+};
+
 const historyWith = (toolPart: unknown) => [
   {
     id: "m1",
@@ -66,6 +109,44 @@ describe("chat message validation", () => {
     });
 
     expect(result.success).toBe(true);
+  });
+
+  it("accepts a persisted filter part", async () => {
+    const result = await safeValidateUIMessages<MyMessage>({
+      messages: historyWith(persistedFilterPart),
+      tools: chatTools,
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts a persisted fetch part", async () => {
+    const result = await safeValidateUIMessages<MyMessage>({
+      messages: historyWith(persistedGetPart),
+      tools: chatTools,
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("checks a filter's input against its schema", async () => {
+    // A criteria object with nothing in it is rejected by the tool's schema, and
+    // this is where that rejection has to keep holding once it is persisted.
+    const result = await safeValidateUIMessages<MyMessage>({
+      messages: historyWith({ ...persistedFilterPart, input: {} }),
+      tools: chatTools,
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("checks a fetch's input against its schema", async () => {
+    const result = await safeValidateUIMessages<MyMessage>({
+      messages: historyWith({ ...persistedGetPart, input: { ids: [] } }),
+      tools: chatTools,
+    });
+
+    expect(result.success).toBe(false);
   });
 
   it("checks the tool input against the schema", async () => {

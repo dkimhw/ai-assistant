@@ -34,7 +34,8 @@ memory store, and a BM25F lexical search over an email corpus.
   `@ai-sdk/openai` and both named in `src/app/api/chat/model.ts`.
   `@ai-sdk/google` and `@ai-sdk/anthropic` are installed but not wired up.
 - **Streaming**: `streamText` composed into a custom `createUIMessageStream`
-- **Tools**: one — email search, given to the chat loop with a step limit
+- **Tools**: three over the email corpus — relevance search, exact-criteria
+  filter, and full-text fetch — given to the chat loop with a step limit
 - **Persistence**: a single JSON file, `data/db.local.json` (no database)
 - **Search**: hand-rolled BM25F over `data/emails.json`, fused with a semantic
   ranking by RRF; no search dependency
@@ -56,7 +57,8 @@ memory store, and a BM25F lexical search over an email corpus.
 - `src/lib/search/` — `bm25.ts`, `tokenize.ts`, `rrf.ts`, `semantic.ts` (all
   corpus-agnostic), `documents.ts` (the source registry and `searchDocuments`),
   `document-id.ts` (the id scheme), `emails.ts` (the email source adapter), and
-  `email-search-tool.ts` (the adapter shaped as an AI SDK tool), with tests
+  `email-search-tool.ts`, `email-filter-tool.ts` and `email-get-tool.ts` (the
+  adapter shaped as three AI SDK tools), with tests
 - `src/lib/persistence-layer.ts` — JSON-file store for chats and memories
 - `src/components/ai-elements/` — AI chat UI primitives
 - `src/components/ui/` — shadcn/Radix primitives
@@ -111,6 +113,11 @@ Messages have a `parts` array that can contain multiple types:
 - `reasoning` — extended thinking content
 - `source-url` — URLs referenced in responses
 - `tool-searchEmails` — an email search call, rendered as a collapsible block
+- `tool-filterEmails` — an exact-criteria filter call, rendered the same way.
+  Its output is `{ totalMatches, emails }`, not a bare array: the count is the
+  point, and it is the pre-cap total
+- `tool-getEmails` — a full-text fetch by id, rendered the same way. Output is
+  `{ emails, missingIds }`; bodies here are **not** truncated
 
 `MyMessage` is the project's `UIMessage` specialisation. It adds a custom
 `data-frontend-action` part carrying `"refresh-sidebar"`, written with
