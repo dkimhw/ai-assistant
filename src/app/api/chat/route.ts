@@ -73,6 +73,18 @@ const MAX_STEPS = 8;
  * because the model cannot otherwise tell "I chose bad words" from "no words
  * exist" — the two feel identical from inside a failed search.
  *
+ * What those questions get instead is a disclosure rule, not a substitute
+ * answer. The first version of this sent the model to `filterEmails` over a
+ * recent window as though that were a workaround; against this corpus it is
+ * barely one. Only 12 of 547 emails fall in the 30 days before today, 36 are
+ * dated in the future, and the whole thing runs to 2026-10-25 — so the window
+ * the rule pointed at is close to empty, and a confident triage assembled from
+ * two receipts is worse than an admission. It is also the wrong shape: a date
+ * range cannot express "still waiting on a reply", which is what the question
+ * actually asks. So the rule now says what can be seen and what cannot, and
+ * redirects to the questions this corpus answers well. The real fix is a tool
+ * that reads thread state — see issue #15.
+ *
  * The tool-choice rules are the ones to expect to tune. Three tools over one
  * corpus mean the failure to design against is reaching for the wrong one, and
  * two specific wrong reaches are worth naming: `filterEmails`' `contains` used
@@ -100,7 +112,8 @@ You have three tools over the user's emails. Pick by what the question is asking
 - NEVER answer from your training data - always look at the actual emails first
 - Write the \`query\` for \`searchEmails\` as the user's question rephrased for search: keep their natural phrasing, and include the specific names, amounts, and nouns from their question. Search is hybrid — the same query is matched both semantically and by keyword — so one well-chosen query serves both
 - You get TWO attempts at \`searchEmails\` for a given question. If the first comes back empty or irrelevant, rephrase once with different keywords. If the second also fails, STOP searching and tell the user what you searched for and that you could not find it — do not keep trying new phrasings
-- Some questions have no search terms at all — "what's urgent", "what needs a reply", "what should I deal with first". Relevance search cannot answer those and guessing at words like "urgent" or "ASAP" will not make it. Use \`filterEmails\` over a recent date range once, read what comes back, and reason about it yourself. Say that you looked at the recent window rather than the whole inbox
+- Some questions have no search terms at all — "what's urgent", "what needs a reply", "what should I deal with first". Relevance search cannot answer those, and guessing at words like "urgent" or "ASAP" will not make it: the emails that say "urgent" are mostly not the ones that need you. No other tool answers them either — nothing here can tell a message still waiting on a reply from one that was settled weeks ago
+- So do not pretend to have triaged the inbox. You may filter a date range and reason over what comes back, but treat it as a sample: say which window you looked at, say that it is a slice and not the whole inbox, and say that you cannot see which messages are still open. A window may hold very little — if it comes back nearly empty, say so rather than presenting two emails as the answer. Offer what you can instead: the user can name a sender, a topic, or a date range, and those you can answer well
 - Use \`filterEmails\` when the answer is a set or a count. State counts from its \`totalMatches\`, never from how many emails it returned — it returns a capped slice and \`totalMatches\` is the truth
 - \`contains\` in \`filterEmails\` is an exact substring test, not a search. Use it for reference numbers and literal strings. If a filter comes back empty, try \`searchEmails\` before telling the user they have no such emails — a filter finds nothing when your guess at a name or a spelling was wrong
 - Search and filter results are PARTIAL. \`filterEmails\` truncates a body; \`searchEmails\` returns the passage of the email that matched, which may start part-way through a long message and may leave out quoted history. A body ending in "…" has more after it
