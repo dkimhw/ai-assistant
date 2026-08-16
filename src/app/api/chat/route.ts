@@ -63,6 +63,16 @@ const MAX_STEPS = 8;
  * Nothing here mentions how many results to ask for — the count is fixed in each
  * tool and the model has no say in it.
  *
+ * The search budget is here rather than in the tool, because it is a rule about
+ * the turn and not about a call. An open-ended "try different keywords if that
+ * didn't work" is a licence to spend the whole step ceiling: a question with no
+ * retrieval target — "which emails are most urgent" — satisfies no search, so
+ * the model rephrases until `stopWhen` cuts it off, and the user waits through
+ * seven round-trips for nothing. Two attempts and then an admission is the
+ * honest shape, and the questions that provoke the loop are named explicitly
+ * because the model cannot otherwise tell "I chose bad words" from "no words
+ * exist" — the two feel identical from inside a failed search.
+ *
  * The tool-choice rules are the ones to expect to tune. Three tools over one
  * corpus mean the failure to design against is reaching for the wrong one, and
  * two specific wrong reaches are worth naming: `filterEmails`' `contains` used
@@ -89,10 +99,12 @@ You have three tools over the user's emails. Pick by what the question is asking
 - You MUST use these tools for ANY question about emails, people, amounts, dates, or specific information
 - NEVER answer from your training data - always look at the actual emails first
 - Write the \`query\` for \`searchEmails\` as the user's question rephrased for search: keep their natural phrasing, and include the specific names, amounts, and nouns from their question. Search is hybrid — the same query is matched both semantically and by keyword — so one well-chosen query serves both
-- If the first search doesn't find enough information, try different keywords or search queries
+- You get TWO attempts at \`searchEmails\` for a given question. If the first comes back empty or irrelevant, rephrase once with different keywords. If the second also fails, STOP searching and tell the user what you searched for and that you could not find it — do not keep trying new phrasings
+- Some questions have no search terms at all — "what's urgent", "what needs a reply", "what should I deal with first". Relevance search cannot answer those and guessing at words like "urgent" or "ASAP" will not make it. Use \`filterEmails\` over a recent date range once, read what comes back, and reason about it yourself. Say that you looked at the recent window rather than the whole inbox
 - Use \`filterEmails\` when the answer is a set or a count. State counts from its \`totalMatches\`, never from how many emails it returned — it returns a capped slice and \`totalMatches\` is the truth
 - \`contains\` in \`filterEmails\` is an exact substring test, not a search. Use it for reference numbers and literal strings. If a filter comes back empty, try \`searchEmails\` before telling the user they have no such emails — a filter finds nothing when your guess at a name or a spelling was wrong
-- Search and filter results are TRUNCATED. A body ending in "…" is a fragment. Before you quote an email, or reason about its detail, call \`getEmails\` with its id and read the whole thing
+- Search and filter results are PARTIAL. \`filterEmails\` truncates a body; \`searchEmails\` returns the passage of the email that matched, which may start part-way through a long message and may leave out quoted history. A body ending in "…" has more after it
+- So an email saying nothing about X in a search result is NOT evidence that the email says nothing about X. Before you quote an email, reason about its detail, or conclude it does not contain something, call \`getEmails\` with its id and read the whole thing
 - Pass \`expandThread: true\` to \`getEmails\` when an email reads as a reply, so you answer against the message it replies to rather than guessing at it. It is a parameter of that tool, not a tool of its own. Say when a message is part of a longer exchange
 - If an id you passed to \`getEmails\` comes back in \`missingIds\`, you invented it. Search again — do not guess another id
 - Only after looking should you formulate your answer based on what you found
@@ -176,6 +188,12 @@ export async function POST(req: Request) {
         messages: convertToModelMessages(messages),
         tools: chatTools,
         stopWhen: stepCountIs(MAX_STEPS),
+        // Without this a turn the user abandoned keeps running to the step
+        // ceiling: every remaining search still embeds, still reranks, still
+        // bills, and the request holds until it is done. `req.signal` fires when
+        // the client disconnects, including when the stop button aborts the
+        // fetch, so the loop ends where the user's interest in it did.
+        abortSignal: req.signal,
       });
 
       writer.merge(

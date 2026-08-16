@@ -3,7 +3,7 @@
 A description of what the test suite currently is, what each test buys us, and
 which tests are load-bearing enough to be worth your review time.
 
-Status as of this document: **159 tests, 11 files, all passing, ~900ms.**
+Status as of this document: **179 tests, 11 files, all passing, ~1.1s.**
 Almost every test lives in `src/lib/search/`; the one exception is described
 below and is a deliberate one.
 
@@ -13,9 +13,9 @@ src/lib/search/bm25.test.ts              18 tests
 src/lib/search/rrf.test.ts               17 tests
 src/lib/search/email-chunks.test.ts       9 tests
 src/lib/search/vector-artifact.test.ts   11 tests
-src/lib/search/documents.test.ts         17 tests
+src/lib/search/documents.test.ts         26 tests
 src/lib/search/emails.test.ts             9 tests
-src/lib/search/email-search-tool.test.ts 10 tests
+src/lib/search/email-search-tool.test.ts 21 tests
 src/lib/search/email-filter-tool.test.ts 32 tests
 src/lib/search/email-get-tool.test.ts    21 tests
 src/app/api/chat/tools.test.ts            7 tests
@@ -26,7 +26,54 @@ src/app/api/chat/tools.test.ts            7 tests
 > `vector-artifact.test.ts` arrived with hybrid search and are not yet described
 > there. `documents.test.ts` arrived with source-namespaced ids (issue #6), and
 > `email-filter-tool.test.ts` and `email-get-tool.test.ts` with the filter and
-> fetch tools (issue #10); both are summarised below.
+> fetch tools (issue #10); both are summarised below. Reranking (issue #11) added
+> tests to `documents.test.ts` and `email-search-tool.test.ts`, summarised next.
+
+### Reranking
+
+Reranking is tested at the two seams it touches, with no third one added: the
+document layer over fake sources, and the tool over the real corpus. Both use a
+fake `Reranker` — one that reorders deterministically and records what it was
+asked, one that throws — exactly as the embedder fixtures work. No network, no
+mocks, and nothing asserts on a prompt string.
+
+The document-layer tests cover what reranking *is*: results reorder away from the
+fused order, the pool it sees is deeper than the caller's limit, the winning
+chunk is the one returned along with its position among its document's chunks,
+documents stay collapsed one-per-result, the passages one call reads are bounded
+even when the documents are not, and a throwing reranker falls back to the fused
+ordering. One test pins the negative — omitting a reranker leaves results with no
+chunk, which is what keeps the search page unchanged.
+
+The tool tests cover the conversation contract, which is the part most likely to
+rot silently: the reranker receives the recent user and assistant text, it
+receives no tool calls or tool results, the history is truncated to
+`EMAIL_SEARCH_HISTORY_MESSAGES` and each message to
+`EMAIL_SEARCH_HISTORY_CHARACTERS`, and an empty history is a normal first turn
+rather than an error. The "no tool history" rule is enforced there by a test
+rather than by a comment.
+
+Two more cover the excerpt contract, which is the one with teeth: a passage with
+more of the email after it ends in an ellipsis, and a passage that *is* the whole
+email does not. Get that wrong and the system prompt's "a body ending in … has
+more after it" rule quietly starts lying to the model.
+
+Two notes on what moved:
+
+- **"returns the passage that won, not the opening of the email"** flips the chunk
+  order *within* each document while holding the document order, so the assertion
+  is about which passage came back and not about which emails did.
+- **"truncates bodies to the documented budget"** now reaches the budget through
+  the degraded path. Most passages sit well under it — of 606 chunks the median
+  is 512 characters and only 17 exceed 1200 (max 1276) — and none of the ones
+  that query returns is among them, so the happy path stopped reaching the bound
+  and the second half of the test began passing vacuously. A whole body is not
+  bounded that way, and that is what a result falls back to when reranking is
+  unavailable.
+
+`reranker.ts`'s OpenAI implementation has no test of its own, consistent with
+`createOpenAIEmbedder`: it is a thin provider adapter, and a test of it would be
+a test of the SDK.
 
 ### The filter and fetch tools
 

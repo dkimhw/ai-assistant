@@ -24,6 +24,17 @@ export const CHAT_MODEL = "gpt-5.4-mini";
 export const TITLE_MODEL = "gpt-5.4-nano";
 
 /**
+ * Reranking search results is a one-shot, tool-free call that reads a bounded
+ * set of short passages and returns an order, so it runs on the same tier as
+ * titles rather
+ * than on the chat model: it is judgement about text already in front of it, not
+ * reasoning it has to do unaided. Its own constant rather than a reference to
+ * `TITLE_MODEL` because the two are separate knobs that happen to agree today —
+ * reranking is the one worth trying a tier up when there are evals to say so.
+ */
+export const RERANK_MODEL = "gpt-5.4-nano";
+
+/**
  * `OPEN_AI_API_KEY` is what this repo's `.env` happens to call it. Same fallback
  * order as the embedder, so there is one key convention here rather than two.
  */

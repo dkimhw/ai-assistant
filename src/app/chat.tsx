@@ -70,7 +70,7 @@ export const Chat = (props: { chat: DB.Chat | null }) => {
   const chatIdFromSearchParams = searchParams.get("chatId");
 
   const chatIdInUse = chatIdFromSearchParams || backupChatId;
-  const { messages, sendMessage, status, regenerate } = useChat<MyMessage>({
+  const { messages, sendMessage, status, regenerate, stop } = useChat<MyMessage>({
     id: chatIdInUse,
     messages: props.chat?.messages || [],
     onData: (message) => {
@@ -85,6 +85,9 @@ export const Chat = (props: { chat: DB.Chat | null }) => {
   });
 
   const ref = useFocusWhenNoChatIdPresent(chatIdFromSearchParams);
+
+  /** A turn the user can still abandon: waiting on the first token, or mid-stream. */
+  const inFlight = status === "submitted" || status === "streaming";
 
   const handleSubmit = (message: PromptInputMessage) => {
     const hasText = Boolean(message.text);
@@ -285,7 +288,20 @@ export const Chat = (props: { chat: DB.Chat | null }) => {
                 </PromptInputActionMenuContent>
               </PromptInputActionMenu>
             </PromptInputTools>
-            <PromptInputSubmit disabled={!input && !status} status={status} />
+            {/*
+              While a turn is in flight the button already draws itself as a
+              stop square, so it has to actually stop: `type="submit"` there
+              sends the prompt *again* on top of the turn the user was trying to
+              abandon. A turn can be eight tool calls long, which is long enough
+              that wanting out of one is a normal thing to want.
+            */}
+            <PromptInputSubmit
+              disabled={!input && !inFlight}
+              status={status}
+              type={inFlight ? "button" : "submit"}
+              onClick={inFlight ? () => stop() : undefined}
+              aria-label={inFlight ? "Stop" : "Submit"}
+            />
           </PromptInputToolbar>
         </PromptInput>
       </div>

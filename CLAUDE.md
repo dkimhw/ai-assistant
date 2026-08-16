@@ -30,15 +30,17 @@ memory store, and a BM25F lexical search over an email corpus.
 
 - **Framework**: Next.js 15 (App Router), React 19
 - **AI SDK**: Vercel AI SDK (`ai`) with `@ai-sdk/react` on the client
-- **Model**: `gpt-5.4-mini` for chat, `gpt-5.4-nano` for titles, both via
-  `@ai-sdk/openai` and both named in `src/app/api/chat/model.ts`.
+- **Model**: `gpt-5.4-mini` for chat, `gpt-5.4-nano` for titles and for reranking
+  search results, all via `@ai-sdk/openai` and all named in
+  `src/app/api/chat/model.ts`.
   `@ai-sdk/google` and `@ai-sdk/anthropic` are installed but not wired up.
 - **Streaming**: `streamText` composed into a custom `createUIMessageStream`
 - **Tools**: three over the email corpus — relevance search, exact-criteria
   filter, and full-text fetch — given to the chat loop with a step limit
 - **Persistence**: a single JSON file, `data/db.local.json` (no database)
 - **Search**: hand-rolled BM25F over `data/emails.json`, fused with a semantic
-  ranking by RRF; no search dependency
+  ranking by RRF, then reranked by an LLM for the chat tool only; no search
+  dependency
 - **Testing**: vitest; `evalite` is installed and configured for relevance evals
   but has no suites yet
 - **Markdown**: `streamdown` for rendering
@@ -54,9 +56,10 @@ memory store, and a BM25F lexical search over an email corpus.
 - `src/app/api/chat/tools.ts` — the tool set the chat loop is given
 - `src/app/actions/memories.ts` — server actions for memory CRUD
 - `src/app/search/` — email search page plus its route-local components
-- `src/lib/search/` — `bm25.ts`, `tokenize.ts`, `rrf.ts`, `semantic.ts` (all
-  corpus-agnostic), `documents.ts` (the source registry and `searchDocuments`),
-  `document-id.ts` (the id scheme), `emails.ts` (the email source adapter), and
+- `src/lib/search/` — `bm25.ts`, `tokenize.ts`, `rrf.ts`, `semantic.ts`,
+  `reranker.ts` (all corpus-agnostic), `documents.ts` (the source registry and
+  `searchDocuments`), `document-id.ts` (the id scheme), `emails.ts` (the email
+  source adapter), and
   `email-search-tool.ts`, `email-filter-tool.ts` and `email-get-tool.ts` (the
   adapter shaped as three AI SDK tools), with tests
 - `src/lib/persistence-layer.ts` — JSON-file store for chats and memories
@@ -135,13 +138,30 @@ adapters.
 - `documents.ts` owns the source registry and the single public entry point,
   `searchDocuments`. It mints ids, unions every source into one index of each
   kind, fuses the two rankings, and collapses chunk hits back to documents. It
-  never inspects a document's content. `sources` and `embedder` are both
-  injectable, so tests use fakes rather than mocks.
+  never inspects a document's content. `sources`, `embedder` and `reranker` are
+  all injectable, so tests use fakes rather than mocks.
 - `emails.ts` is the first source adapter: it reads the corpus, maps `Email` onto
   subject/body/from/to, owns the field weights (`{ subject: 3, body: 1, from: 2,
   to: 1 }`, a starting guess to be tuned against evals), delegates chunking to
   `email-chunks.ts`, and supplies the committed vectors. `searchEmails` is a thin
   wrapper over `searchDocuments` so the search page still receives `Email`s.
+
+Passing a `reranker` to `searchDocuments` adds a stage after fusion: a pool of
+`RERANK_CANDIDATE_POOL` fused documents has its *chunks* read and reordered by an
+LLM, then collapses one-per-document again, and each result gains the chunk it
+won on. It is off unless asked for — the search page does not pass one and is
+unchanged; `searchEmails` from the chat tool does. `reranker.ts` mirrors
+`embedder.ts`: a provider-agnostic `Reranker` (opaque ids, text, an order out —
+no scores) plus one OpenAI implementation, so a cross-encoder later is a new
+implementation and no pipeline change. A failing reranker degrades to the fused
+ordering, exactly as a failing embedder degrades to lexical-only.
+
+The chat tool passes the last `EMAIL_SEARCH_HISTORY_MESSAGES` user and assistant
+messages as rerank context, so "what was the deadline on that?" is ranked against
+what was being discussed. Tool calls and tool results are filtered out in
+`email-search-tool.ts` — feeding a retrieval system its own previous retrievals
+sticks a conversation in one neighbourhood of the corpus. History reaches the
+reranker and nothing else; the BM25F and semantic legs still see only the query.
 
 Document ids are `${sourceType}:${nativeId}` (`email:email_1759…`) and chunk ids
 are `${documentId}#${n}`. `:` and `#` are reserved and rejected at index time;

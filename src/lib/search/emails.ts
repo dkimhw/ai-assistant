@@ -4,6 +4,7 @@ import { parseDocumentId } from "@/lib/search/document-id";
 import type {
   DocumentChunk,
   DocumentSource,
+  RankedChunk,
   SearchDocument,
 } from "@/lib/search/documents";
 import { searchDocuments } from "@/lib/search/documents";
@@ -13,6 +14,7 @@ import {
   DEFAULT_EMBEDDING_MODEL,
   type Embedder,
 } from "@/lib/search/embedder";
+import type { Reranker } from "@/lib/search/reranker";
 import {
   assertArtifactMatches,
   decodeVectors,
@@ -173,15 +175,23 @@ const emailOf = (document: SearchDocument): Email | undefined =>
  * Hybrid search, narrowed to emails.
  *
  * A thin wrapper over `searchDocuments` so the search page and the chat tool
- * keep receiving `Email` objects. Ranking, fusion, and the embedder fallback all
- * live in the document layer; this only filters and maps.
+ * keep receiving `Email` objects. Ranking, fusion, and the embedder and
+ * reranker fallbacks all live in the document layer; this only filters and maps.
+ *
+ * A result carries `chunk` only when a reranker ran — the passage the email won
+ * on, which is what the chat tool shows the model in place of the body's
+ * opening. The search page passes no reranker and is unaffected.
  */
 export const searchEmails = async (opts: {
   query: string;
   limit?: number;
   /** Defaults to the configured OpenAI embedder. Tests inject a stub and never hit the network. */
   embedder?: Embedder;
-}): Promise<Array<{ email: Email; score: number }>> => {
+  /** Off unless passed: reranking costs a model call, so a caller asks for it. */
+  reranker?: Reranker;
+  /** Recent conversation for the reranker, oldest first. */
+  rerankContext?: string[];
+}): Promise<Array<{ email: Email; score: number; chunk?: RankedChunk }>> => {
   const results = await searchDocuments({
     query: opts.query,
     limit: opts.limit,
@@ -189,10 +199,12 @@ export const searchEmails = async (opts: {
     // a second source is registered.
     sourceTypes: [EMAIL_SOURCE_TYPE],
     embedder: opts.embedder,
+    reranker: opts.reranker,
+    rerankContext: opts.rerankContext,
   });
 
   return results.flatMap((result) => {
     const email = emailOf(result.document);
-    return email ? [{ email, score: result.score }] : [];
+    return email ? [{ email, score: result.score, chunk: result.chunk }] : [];
   });
 };
