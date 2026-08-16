@@ -109,12 +109,33 @@ const promptFor = (opts: {
  * unset API key is an error at search time rather than at import time — where it
  * would take down every route that reaches the tool set.
  */
+/**
+ * Ceiling on one rerank call.
+ *
+ * Nothing else will impose one. `maxDuration` was removed from the chat route
+ * because this deploys as a long-lived Node process rather than as serverless
+ * functions, so a provider that accepts the connection and then goes quiet hangs
+ * the tool call, which hangs the turn, which hangs the request — and the only
+ * thing that eventually notices is a proxy's idle timeout, which kills the
+ * stream in a way the user reads as a crash.
+ *
+ * Degrading is cheap here and hanging is not: this stage is optional by
+ * construction, so a call that gives up returns the fused ordering and the user
+ * gets slightly worse results instead of no results. Fifteen seconds is far
+ * above nano's normal latency on a bounded set of short passages and far below a
+ * user's patience for a search box. A guess, but a guess with a lot of daylight
+ * either side of it.
+ */
+export const DEFAULT_RERANK_TIMEOUT_MS = 15_000;
+
 export const createOpenAIReranker = (opts?: {
   model?: string;
   apiKey?: string;
+  timeoutMs?: number;
 }): Reranker => {
   const model = opts?.model ?? RERANK_MODEL;
   const apiKey = opts?.apiKey ?? apiKeyFromEnv();
+  const timeoutMs = opts?.timeoutMs ?? DEFAULT_RERANK_TIMEOUT_MS;
 
   if (!apiKey) {
     throw new Error(
@@ -134,6 +155,7 @@ export const createOpenAIReranker = (opts?: {
         system: RERANK_SYSTEM_PROMPT,
         prompt: promptFor({ query, context, candidates }),
         schema: rerankOutputSchema,
+        abortSignal: AbortSignal.timeout(timeoutMs),
       });
 
       // The model is asked for a permutation and usually returns one, but a

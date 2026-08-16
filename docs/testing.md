@@ -3,7 +3,7 @@
 A description of what the test suite currently is, what each test buys us, and
 which tests are load-bearing enough to be worth your review time.
 
-Status as of this document: **179 tests, 11 files, all passing, ~1.1s.**
+Status as of this document: **180 tests, 11 files, all passing, ~1.1s.**
 Almost every test lives in `src/lib/search/`; the one exception is described
 below and is a deliberate one.
 
@@ -16,7 +16,7 @@ src/lib/search/vector-artifact.test.ts   11 tests
 src/lib/search/documents.test.ts         26 tests
 src/lib/search/emails.test.ts             9 tests
 src/lib/search/email-search-tool.test.ts 21 tests
-src/lib/search/email-filter-tool.test.ts 32 tests
+src/lib/search/email-filter-tool.test.ts 33 tests
 src/lib/search/email-get-tool.test.ts    21 tests
 src/app/api/chat/tools.test.ts            7 tests
 ```
@@ -512,3 +512,22 @@ Listed as findings, not recommendations — the scoping calls are yours.
    human typed. LLM queries are longer and more prose-like, and those choices
    will bite differently there. This is the first thing an eval suite should
    measure, and it is entirely unmeasured today.
+
+8. **The chat loop's failure handling is uncovered, by construction.** The step
+   budget that stops a searchless question from spending the whole ceiling, the
+   `toolChoice: "none"` that guarantees a final step is prose, the stream's
+   `onError`, the guard that refuses to persist an empty assistant message, and
+   the provider timeouts on the embedder and reranker are all untested.
+
+   Each is untestable at a seam this suite is willing to reach. The first four
+   live in `route.ts`, which needs a model and the persistence layer; the last
+   two live inside the OpenAI implementations, where observing a timeout means
+   either a network call or the mock this suite does not permit. The behaviour
+   they produce — degrade rather than hang, land on an answer rather than stop
+   mid-thought — is exactly the kind that fails silently, so this is the most
+   uncomfortable entry on this list.
+
+   The honest fix is not a mock. It is either making the timeout a property of
+   the `Reranker`/`Embedder` interface, where a fake can exercise it without a
+   network, or an integration test with a stub language model. Both are real
+   pieces of work; neither was done here.

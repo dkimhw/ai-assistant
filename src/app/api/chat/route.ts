@@ -194,6 +194,19 @@ export async function POST(req: Request) {
         // the client disconnects, including when the stop button aborts the
         // fetch, so the loop ends where the user's interest in it did.
         abortSignal: req.signal,
+        // `stopWhen` is a guillotine: it ends the turn after the Nth step
+        // whatever that step was, so a turn that spends its last step on a tool
+        // call ends with a tool result and no reply. The user gets a transcript
+        // that stops mid-thought, which reads as a crash and is indistinguishable
+        // from one.
+        //
+        // Taking the tools away for the final step converts that into an answer.
+        // The model still has every result it gathered and can only write prose
+        // with them, so the worst case becomes "here is what I found and what I
+        // could not" rather than silence. It costs nothing on the turns that
+        // never reach the ceiling, which is almost all of them.
+        prepareStep: ({ stepNumber }) =>
+          stepNumber === MAX_STEPS - 1 ? { toolChoice: "none" } : undefined,
       });
 
       writer.merge(
@@ -206,7 +219,45 @@ export async function POST(req: Request) {
       await generateTitlePromise;
     },
     generateId: () => crypto.randomUUID(),
-    onFinish: async ({ responseMessage }) => {
+    // The default swallows the error and sends "An error occurred." — which is
+    // all anyone, developer included, ever sees. Three of the ways this route
+    // can fail (a provider outage, a missing key, a hung rerank) produce that
+    // same sentence, so the log is where the difference has to live.
+    //
+    // What goes back to the client stays deliberately coarse: a provider error
+    // can carry a key fragment or an internal URL, and this string is rendered
+    // in the transcript. Naming the stage is the most that can be said safely,
+    // and it is enough to tell "retrieval broke" from "the model refused".
+    onError: (error) => {
+      console.error("[chat] stream failed:", error);
+
+      return error instanceof Error && error.name === "AbortError"
+        ? "Stopped."
+        : "Something went wrong answering that. The details are in the server log.";
+    },
+    onFinish: async ({ responseMessage, isAborted }) => {
+      // A disconnect still persists, on purpose — that is what makes a reply
+      // survive a closed laptop, and the standard this route is written to.
+      // What must not persist is a message with nothing in it: an abort during
+      // the first step, or a failure before any token, otherwise writes an empty
+      // assistant turn that is replayed forever as a gap in the conversation.
+      //
+      // `isAborted` is not the test. An abort halfway through a sentence leaves
+      // something worth keeping; a clean failure at step zero leaves nothing.
+      // Emptiness is the thing being guarded against, so emptiness is what gets
+      // measured.
+      const hasContent = responseMessage.parts.some((part) =>
+        part.type === "text" ? part.text.trim().length > 0 : true
+      );
+
+      if (!hasContent) {
+        console.warn(
+          `[chat] discarding empty assistant message for ${chatId}`,
+          { isAborted }
+        );
+        return;
+      }
+
       await appendToChatMessages(chatId, [responseMessage]);
     },
   });

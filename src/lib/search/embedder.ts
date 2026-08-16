@@ -31,14 +31,33 @@ export const DEFAULT_EMBEDDING_DIMENSIONS = 1536;
 const apiKeyFromEnv = () =>
   process.env.OPENAI_API_KEY ?? process.env.OPEN_AI_API_KEY;
 
+/**
+ * Ceiling on one `embed` call, sized for the query path — one short string,
+ * inline in a user's search.
+ *
+ * The default is the interactive number rather than the batch one on purpose:
+ * the query path takes this embedder implicitly (`searchDocuments` constructs it
+ * when none is passed), while the one caller with a genuinely long job — the
+ * vector build — constructs its own and can say so. Defaulting the other way
+ * would leave the interactive path silently unbounded, which is the failure
+ * worth engineering against.
+ *
+ * A timed-out query embedding costs the semantic leg and nothing else: search
+ * falls back to lexical, exactly as it does when there is no key.
+ */
+export const DEFAULT_EMBED_TIMEOUT_MS = 10_000;
+
 export const createOpenAIEmbedder = (opts?: {
   model?: string;
   dimensions?: number;
   apiKey?: string;
+  /** Raise it for bulk work. See `DEFAULT_EMBED_TIMEOUT_MS`. */
+  timeoutMs?: number;
 }): Embedder => {
   const model = opts?.model ?? DEFAULT_EMBEDDING_MODEL;
   const dimensions = opts?.dimensions ?? DEFAULT_EMBEDDING_DIMENSIONS;
   const apiKey = opts?.apiKey ?? apiKeyFromEnv();
+  const timeoutMs = opts?.timeoutMs ?? DEFAULT_EMBED_TIMEOUT_MS;
 
   if (!apiKey) {
     throw new Error(
@@ -60,6 +79,7 @@ export const createOpenAIEmbedder = (opts?: {
         // Always explicit: the artifact header claims this dimensionality, so
         // the request should ask for it rather than inherit the model default.
         providerOptions: { openai: { dimensions } },
+        abortSignal: AbortSignal.timeout(timeoutMs),
       });
 
       return embeddings.map((embedding) =>
