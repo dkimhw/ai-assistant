@@ -30,11 +30,18 @@ export type MyMessage = UIMessage<
 >;
 
 /**
- * A ceiling on one turn: search, read, answer, with room to search again after a
- * bad first guess at phrasing. Without it a confused model can loop on the tool
- * indefinitely.
+ * A ceiling on one turn. Five was sized for search, read, answer, with room to
+ * search again after a bad first guess at phrasing.
+ *
+ * Three tools make a longer path legitimate rather than confused: filter to
+ * establish the set, search to find the substance in it, fetch two emails in
+ * full, answer. That is four steps with nothing left over for the retry the
+ * original five existed to allow, so the ceiling moves with the tool count.
+ *
+ * Eight, not more: this bounds the cost of one confused turn, and a model that
+ * has not found the answer in eight tool calls is not about to.
  */
-const MAX_STEPS = 5;
+const MAX_STEPS = 8;
 
 /**
  * Prose in one place, so tuning retrieval behaviour stays a text edit.
@@ -49,26 +56,51 @@ const MAX_STEPS = 5;
  * format: that is what a user recognises in their own inbox, and a rule the
  * model can satisfy naturally in prose gets followed, where a citation format
  * gets followed for two turns and then drifts. The ids are in the payload for
- * the UI's benefit, not for the user to read.
+ * the UI's benefit, not for the user to read — with the one exception that
+ * `getEmails` takes them, which is why the rules say to pass them back rather
+ * than print them.
  *
- * Nothing here mentions how many results to ask for — the count is fixed in the
+ * Nothing here mentions how many results to ask for — the count is fixed in each
  * tool and the model has no say in it.
+ *
+ * The tool-choice rules are the ones to expect to tune. Three tools over one
+ * corpus mean the failure to design against is reaching for the wrong one, and
+ * two specific wrong reaches are worth naming: `filterEmails`' `contains` used
+ * as a cheap search, which returns literal-substring emptiness where the ranker
+ * would have found the answer; and `getEmails` never called at all, because a
+ * truncated body reads as complete unless the model is looking for the ellipsis.
+ * Both are addressed here in prose rather than in tool behaviour, because the
+ * tools cannot tell which mistake is being made and the prompt can say what to
+ * do about it.
  */
 const SYSTEM_PROMPT = `<task-context>
 You are an email assistant that helps users find and understand information from their emails.
 </task-context>
 
+<tools>
+You have three tools over the user's emails. Pick by what the question is asking for.
+
+- \`searchEmails\` — for what an email SAID or MEANT: topics, paraphrases, "what did they say about the survey". Ranked by relevance, returns the best few
+- \`filterEmails\` — for facts ABOUT emails: who sent them, who they went to, when, how many, or an exact string they contain. Returns a true total count alongside the matches
+- \`getEmails\` — for reading emails you have already found, in full. Takes the ids from a search or filter result
+</tools>
+
 <rules>
-- You MUST use the search tool for ANY question about emails, people, amounts, dates, or specific information
-- NEVER answer from your training data - always search the actual emails first
+- You MUST use these tools for ANY question about emails, people, amounts, dates, or specific information
+- NEVER answer from your training data - always look at the actual emails first
+- Write the \`query\` for \`searchEmails\` as the user's question rephrased for search: keep their natural phrasing, and include the specific names, amounts, and nouns from their question. Search is hybrid — the same query is matched both semantically and by keyword — so one well-chosen query serves both
 - If the first search doesn't find enough information, try different keywords or search queries
-- Write the \`query\` as the user's question rephrased for search: keep their natural phrasing, and include the specific names, amounts, and nouns from their question. Search is hybrid — the same query is matched both semantically and by keyword — so one well-chosen query serves both
-- Only after searching should you formulate your answer based on the search results
-- Cite the emails you used: name the sender and subject of each one your answer draws on, and say when a claim comes from only one email. If the results do not answer the question, say so plainly and say what you searched for — never fill the gap from memory
+- Use \`filterEmails\` when the answer is a set or a count. State counts from its \`totalMatches\`, never from how many emails it returned — it returns a capped slice and \`totalMatches\` is the truth
+- \`contains\` in \`filterEmails\` is an exact substring test, not a search. Use it for reference numbers and literal strings. If a filter comes back empty, try \`searchEmails\` before telling the user they have no such emails — a filter finds nothing when your guess at a name or a spelling was wrong
+- Search and filter results are TRUNCATED. A body ending in "…" is a fragment. Before you quote an email, or reason about its detail, call \`getEmails\` with its id and read the whole thing
+- Pass \`expandThread: true\` to \`getEmails\` when an email reads as a reply, so you answer against the message it replies to rather than guessing at it. It is a parameter of that tool, not a tool of its own. Say when a message is part of a longer exchange
+- If an id you passed to \`getEmails\` comes back in \`missingIds\`, you invented it. Search again — do not guess another id
+- Only after looking should you formulate your answer based on what you found
+- Cite the emails you used: name the sender and subject of each one your answer draws on, and say when a claim comes from only one email. If nothing you found answers the question, say so plainly and say what you searched or filtered for — never fill the gap from memory
 </rules>
 
 <the-ask>
-Here is the user's question. Search their emails first, then provide your answer based on what you find.
+Here is the user's question. Look at their emails first, then provide your answer based on what you find.
 </the-ask>`;
 
 export async function POST(req: Request) {

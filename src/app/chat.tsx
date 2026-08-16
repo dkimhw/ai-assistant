@@ -51,6 +51,17 @@ import { Fragment, startTransition, useState } from "react";
 import type { MyMessage } from "./api/chat/route";
 import { useFocusWhenNoChatIdPresent } from "./use-focus-chat-when-new-chat-button-pressed";
 
+/**
+ * What each email tool call is called in the transcript. Written from the user's
+ * side of the glass — they are told what the assistant did to their email, not
+ * which function it called.
+ */
+const TOOL_TITLES = {
+  "tool-searchEmails": "Searched your email",
+  "tool-filterEmails": "Filtered your email",
+  "tool-getEmails": "Read your email in full",
+} as const;
+
 export const Chat = (props: { chat: DB.Chat | null }) => {
   const [backupChatId, setBackupChatId] = useState(crypto.randomUUID());
   const [input, setInput] = useState("");
@@ -181,13 +192,21 @@ export const Chat = (props: { chat: DB.Chat | null }) => {
                       </Reasoning>
                     );
                   case "tool-searchEmails":
+                  case "tool-filterEmails":
+                  case "tool-getEmails":
                     // Collapsed by default — the transcript stays readable for
                     // anyone who does not care about the mechanics, and the
                     // header's state badge distinguishes in-flight from done.
+                    //
+                    // All three email tools render the same way and differ only
+                    // in their title: what the user needs from the block is the
+                    // arguments the assistant actually used, which is what tells
+                    // them whether a wrong answer came from retrieval or from
+                    // reasoning.
                     return (
                       <Tool key={`${message.id}-${i}`}>
                         <ToolHeader
-                          title="Searched your email"
+                          title={TOOL_TITLES[part.type]}
                           type={part.type}
                           state={part.state}
                         />
@@ -196,6 +215,35 @@ export const Chat = (props: { chat: DB.Chat | null }) => {
                           <ToolOutput
                             output={part.output}
                             errorText={part.errorText}
+                          />
+                        </ToolContent>
+                      </Tool>
+                    );
+                  case "dynamic-tool":
+                    // Where a *rejected* tool call lands. The SDK builds this
+                    // part, rather than a typed one, when the model's arguments
+                    // fail the tool's schema — and `filterEmails` has rules a
+                    // JSON Schema cannot express, so this is reachable. Without
+                    // a case here the assistant appears to pause and retry for
+                    // no visible reason.
+                    return (
+                      <Tool key={`${message.id}-${i}`}>
+                        <ToolHeader
+                          title={
+                            TOOL_TITLES[
+                              `tool-${part.toolName}` as keyof typeof TOOL_TITLES
+                            ] ?? part.toolName
+                          }
+                          type={`tool-${part.toolName}`}
+                          state={part.state}
+                        />
+                        <ToolContent>
+                          <ToolInput input={part.input} />
+                          <ToolOutput
+                            output={"output" in part ? part.output : undefined}
+                            errorText={
+                              "errorText" in part ? part.errorText : undefined
+                            }
                           />
                         </ToolContent>
                       </Tool>

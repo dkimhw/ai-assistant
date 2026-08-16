@@ -79,6 +79,7 @@ const VECTORS_PATH = path.join(process.cwd(), "data", "email-vectors.json");
 
 let cachedEmails: Email[] | undefined;
 let cachedEmailsById: Map<string, Email> | undefined;
+let cachedEmailsByThreadId: Map<string, Email[]> | undefined;
 let cachedIndex: BM25Index | undefined;
 let cachedSemanticIndex: SemanticIndex | undefined;
 
@@ -92,6 +93,37 @@ const emailsById = (): Map<string, Email> => {
   cachedEmailsById ??= new Map(getAllEmails().map((email) => [email.id, email]));
   return cachedEmailsById;
 };
+
+/** One email by its id, or `undefined` if the corpus has no such email. */
+export const getEmailById = (id: string): Email | undefined =>
+  emailsById().get(id);
+
+const emailsByThreadId = (): Map<string, Email[]> => {
+  if (cachedEmailsByThreadId) return cachedEmailsByThreadId;
+
+  const byThread = new Map<string, Email[]>();
+  for (const email of getAllEmails()) {
+    const thread = byThread.get(email.threadId);
+    if (thread) thread.push(email);
+    else byThread.set(email.threadId, [email]);
+  }
+
+  cachedEmailsByThreadId = byThread;
+  return byThread;
+};
+
+/**
+ * Every email in a thread, oldest first — which is the order a conversation is
+ * read in, and the only order that makes a reply legible against what it
+ * answers. An unknown thread id yields an empty array.
+ *
+ * Threads in this corpus run to at most 4 messages, so sorting per call is
+ * cheaper than holding a second sorted copy.
+ */
+export const getThreadEmails = (opts: { threadId: string }): Email[] =>
+  [...(emailsByThreadId().get(opts.threadId) ?? [])].sort((a, b) =>
+    a.timestamp.localeCompare(b.timestamp)
+  );
 
 /** Memoised module singleton — the corpus is read and indexed once. */
 export const getEmailIndex = (): BM25Index => {

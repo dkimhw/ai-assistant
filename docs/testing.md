@@ -3,7 +3,7 @@
 A description of what the test suite currently is, what each test buys us, and
 which tests are load-bearing enough to be worth your review time.
 
-Status as of this document: **84 tests, 8 files, all passing, ~500ms.**
+Status as of this document: **141 tests, 10 files, all passing, ~800ms.**
 Almost every test lives in `src/lib/search/`; the one exception is described
 below and is a deliberate one.
 
@@ -15,13 +15,54 @@ src/lib/search/email-chunks.test.ts       9 tests
 src/lib/search/vector-artifact.test.ts    9 tests
 src/lib/search/emails.test.ts            10 tests
 src/lib/search/email-search-tool.test.ts 10 tests
-src/app/api/chat/tools.test.ts            3 tests
+src/lib/search/email-filter-tool.test.ts 32 tests
+src/lib/search/email-get-tool.test.ts    21 tests
+src/app/api/chat/tools.test.ts            7 tests
 ```
 
 > The test-by-test breakdown in section 3 covers `tokenize`, `bm25`, `rrf`,
 > `emails`, `email-search-tool`, and `tools`. `email-chunks.test.ts` and
 > `vector-artifact.test.ts` arrived with hybrid search and are not yet described
-> there.
+> there; `email-filter-tool.test.ts` and `email-get-tool.test.ts` arrived with
+> the filter and fetch tools (issue #10) and are summarised below.
+
+### The filter and fetch tools
+
+`filterEmails` and `getEmails` are tested at the same seam as
+`email-search-tool.test.ts` — build the tool, call `execute`, assert on the
+return value — and are the first files in the suite to assert **exactly** against
+the real corpus rather than loosely.
+
+That is a deliberate departure from the "assert loosely against real data" rule
+above, and the reasoning is the same one that separates `bm25.test.ts` from
+`rrf.test.ts`: loose assertions exist to survive tuning, and there is nothing to
+tune in a filter. "How many emails are from david.xu" has one right answer. Both
+files state the corpus facts they lean on in their header — 547 emails, 5 from
+david.xu, 3 on the earliest day, the id of the 6660-character longest body — so a
+failure after a corpus change reads as "the data moved" rather than as a puzzle.
+
+Two tests carry more weight than the rest:
+
+- **"returns a long body in full, byte for byte"** — the reason `getEmails`
+  exists. It fetches the corpus's longest email and compares the returned body to
+  the file, then asserts that body is longer than the truncation budget, so the
+  first assertion cannot pass vacuously.
+- **`tools.test.ts`'s two new input-schema tests** — an empty filter criteria
+  object and an empty id list must stay rejected once persisted, which is what
+  keeps the "no criteria means the whole corpus" and "fetch nothing" failures out
+  of replayed history.
+
+Two more earn their place by pinning traps that a code review found rather than
+a failing test:
+
+- **"shows the match even when it sits past the truncation budget"** — `contains`
+  tests the whole body while the payload carries a truncated one, so a deep match
+  used to arrive as an email visibly lacking the string it was filtered on.
+- **"keeps two expanded threads apart rather than interleaving them"** — uses the
+  corpus's one pair of genuinely time-overlapping threads, so a global sort by
+  timestamp fails it. A pair that did not overlap would pass either way.
+
+Neither file needs an embedder fixture; neither touches the ranker.
 
 Run with `pnpm run test` (`vitest run`) or `pnpm run test:watch`.
 
