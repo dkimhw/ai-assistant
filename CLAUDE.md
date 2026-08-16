@@ -35,8 +35,9 @@ memory store, and a BM25F lexical search over an email corpus.
   `src/app/api/chat/model.ts`.
   `@ai-sdk/google` and `@ai-sdk/anthropic` are installed but not wired up.
 - **Streaming**: `streamText` composed into a custom `createUIMessageStream`
-- **Tools**: three over the email corpus — relevance search, exact-criteria
-  filter, and full-text fetch — given to the chat loop with a step limit
+- **Tools**: four over the email corpus — relevance search, exact-criteria
+  filter, thread-state triage, and full-text fetch — given to the chat loop with
+  a step limit
 - **Persistence**: a single JSON file, `data/db.local.json` (no database)
 - **Search**: hand-rolled BM25F over `data/emails.json`, fused with a semantic
   ranking by RRF, then reranked by an LLM for the chat tool only; no search
@@ -58,10 +59,12 @@ memory store, and a BM25F lexical search over an email corpus.
 - `src/app/search/` — email search page plus its route-local components
 - `src/lib/search/` — `bm25.ts`, `tokenize.ts`, `rrf.ts`, `semantic.ts`,
   `reranker.ts` (all corpus-agnostic), `documents.ts` (the source registry and
-  `searchDocuments`), `document-id.ts` (the id scheme), `emails.ts` (the email
-  source adapter), and
-  `email-search-tool.ts`, `email-filter-tool.ts` and `email-get-tool.ts` (the
-  adapter shaped as three AI SDK tools), with tests
+  `searchDocuments`), `document-id.ts` (the id scheme), `date-boundary.ts` (the
+  `after`/`before` schema fragment and its parsing, shared by the filter and
+  triage tools), `emails.ts` (the email source adapter, which also owns
+  `INBOX_OWNER`, `isAutomatedSender` and `getThreadStates`), and
+  `email-search-tool.ts`, `email-filter-tool.ts`, `email-triage-tool.ts` and
+  `email-get-tool.ts` (the adapter shaped as four AI SDK tools), with tests
 - `src/lib/persistence-layer.ts` — JSON-file store for chats and memories
 - `src/components/ai-elements/` — AI chat UI primitives
 - `src/components/ui/` — shadcn/Radix primitives
@@ -133,6 +136,9 @@ Messages have a `parts` array that can contain multiple types:
 - `tool-filterEmails` — an exact-criteria filter call, rendered the same way.
   Its output is `{ totalMatches, emails }`, not a bare array: the count is the
   point, and it is the pre-cap total
+- `tool-triageEmails` — a thread-state review, rendered the same way. Its output
+  is `{ totalMatches, threads }`, and the rows are **threads**, not emails — the
+  only tool whose unit is a conversation
 - `tool-getEmails` — a full-text fetch by id, rendered the same way. Output is
   `{ emails, missingIds }`; bodies here are **not** truncated
 
@@ -188,6 +194,43 @@ Design rationale is in `docs/bm25-search.md` and `docs/hybrid-search.md`.
 
 Adding a kind of document: write a `DocumentSource`, register it in
 `documents.ts`, run `pnpm run build:vectors`.
+
+#### Thread state, which is not search at all
+
+`triageEmails` runs beside that pipeline rather than through it: no query, no
+ranking, no embeddings. `emails.ts` derives one `ThreadState` per thread —
+message count, last message, and `awaiting: "you" | "them"` from who sent it —
+memoised like the corpus itself, and `email-triage-tool.ts` filters and shapes
+those rows.
+
+Two pieces of corpus knowledge it needs live in `emails.ts` beside the adapter:
+
+- `INBOX_OWNER` — inbound and outbound have no meaning without it, and the corpus
+  never states it. A constant rather than an inference, so a quiet owner cannot
+  silently become someone else.
+- `isAutomatedSender` — a local-part prefix test, and the load-bearing heuristic:
+  it decides 158 of the 258 threads that would otherwise read as "waiting". It
+  was validated by hand against all 56 distinct senders and deliberately does
+  **not** generalise to role addresses (`bookings@`, `info@`, `admin@`,
+  `support@` are all staffed by people here, several asking direct questions).
+
+The tool returns facts and refuses to rank: `waitingDays`,
+`lastMessageAsksQuestion`, `lastSenderIsAutomated`, and no `urgent` field
+anywhere. Deciding what matters is the model's job, and the system prompt says
+so.
+
+Two ordering decisions are load-bearing, because a cap of 15 over ~92 candidates
+means the sort decides what the model can see at all:
+
+- **Newest-first, not longest-waiting-first.** The corpus spans two and a half
+  years, so longest-waiting fills every slot with abandoned 2024 threads.
+  Staleness is still on each row as `waitingDays`.
+- **Threads whose last message is in the future are excluded.** 36 emails are
+  dated after today; 8 are the last message of a waiting thread, and
+  newest-first put all 8 at the top reporting 0 days waited. A message that has
+  not arrived is not waiting on a reply — the other three tools still see it.
+
+Rationale is in `src/lib/search/email-triage-tool.ts` and issue #15.
 
 ### Component Architecture
 

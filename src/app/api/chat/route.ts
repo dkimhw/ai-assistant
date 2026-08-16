@@ -33,13 +33,15 @@ export type MyMessage = UIMessage<
  * A ceiling on one turn. Five was sized for search, read, answer, with room to
  * search again after a bad first guess at phrasing.
  *
- * Three tools make a longer path legitimate rather than confused: filter to
+ * Several tools make a longer path legitimate rather than confused: filter to
  * establish the set, search to find the substance in it, fetch two emails in
  * full, answer. That is four steps with nothing left over for the retry the
  * original five existed to allow, so the ceiling moves with the tool count.
  *
  * Eight, not more: this bounds the cost of one confused turn, and a model that
- * has not found the answer in eight tool calls is not about to.
+ * has not found the answer in eight tool calls is not about to. `triageEmails`
+ * did not raise it — its whole shape is one call and then reading, and the turn
+ * it replaced was the one spending all eight.
  */
 const MAX_STEPS = 8;
 
@@ -73,38 +75,38 @@ const MAX_STEPS = 8;
  * because the model cannot otherwise tell "I chose bad words" from "no words
  * exist" — the two feel identical from inside a failed search.
  *
- * What those questions get instead is a disclosure rule, not a substitute
- * answer. The first version of this sent the model to `filterEmails` over a
- * recent window as though that were a workaround; against this corpus it is
- * barely one. Only 12 of 547 emails fall in the 30 days before today, 36 are
- * dated in the future, and the whole thing runs to 2026-10-25 — so the window
- * the rule pointed at is close to empty, and a confident triage assembled from
- * two receipts is worse than an admission. It is also the wrong shape: a date
- * range cannot express "still waiting on a reply", which is what the question
- * actually asks. So the rule now says what can be seen and what cannot, and
- * redirects to the questions this corpus answers well. The real fix is a tool
- * that reads thread state — see issue #15.
+ * Those questions now have a tool rather than a disclosure rule. Two earlier
+ * versions of this prompt tried prose instead: the first sent the model to
+ * `filterEmails` over a recent window as though that were a workaround, and the
+ * second admitted it was not one. Neither could work, because a date range
+ * cannot express "still waiting on a reply" — the question is about the state of
+ * a conversation and every tool here read one message at a time. `triageEmails`
+ * is that missing shape, so the rule reduces to naming it and to insisting the
+ * model judge what it gets back rather than read the list out.
  *
- * The tool-choice rules are the ones to expect to tune. Three tools over one
+ * The tool-choice rules are the ones to expect to tune. Four tools over one
  * corpus mean the failure to design against is reaching for the wrong one, and
- * two specific wrong reaches are worth naming: `filterEmails`' `contains` used
+ * three specific wrong reaches are worth naming: `filterEmails`' `contains` used
  * as a cheap search, which returns literal-substring emptiness where the ranker
- * would have found the answer; and `getEmails` never called at all, because a
- * truncated body reads as complete unless the model is looking for the ellipsis.
- * Both are addressed here in prose rather than in tool behaviour, because the
- * tools cannot tell which mistake is being made and the prompt can say what to
- * do about it.
+ * would have found the answer; `getEmails` never called at all, because a
+ * truncated body reads as complete unless the model is looking for the ellipsis;
+ * and `searchEmails` reached for with the word "urgent" in it, which is the
+ * seven-search turn this whole section exists to prevent. All three are
+ * addressed here in prose rather than in tool behaviour, because the tools
+ * cannot tell which mistake is being made and the prompt can say what to do
+ * about it.
  */
 const SYSTEM_PROMPT = `<task-context>
 You are an email assistant that helps users find and understand information from their emails.
 </task-context>
 
 <tools>
-You have three tools over the user's emails. Pick by what the question is asking for.
+You have four tools over the user's emails. Pick by what the question is asking for.
 
 - \`searchEmails\` — for what an email SAID or MEANT: topics, paraphrases, "what did they say about the survey". Ranked by relevance, returns the best few
 - \`filterEmails\` — for facts ABOUT emails: who sent them, who they went to, when, how many, or an exact string they contain. Returns a true total count alongside the matches
-- \`getEmails\` — for reading emails you have already found, in full. Takes the ids from a search or filter result
+- \`triageEmails\` — for the STATE of conversations: which ones are waiting on a reply from the user, and how long they have been waiting. Takes no query. Pass \`awaiting: "them"\` for the mirror question, the threads the user is waiting on
+- \`getEmails\` — for reading emails you have already found, in full. Takes the ids from a search, filter, or triage result
 </tools>
 
 <rules>
@@ -112,8 +114,11 @@ You have three tools over the user's emails. Pick by what the question is asking
 - NEVER answer from your training data - always look at the actual emails first
 - Write the \`query\` for \`searchEmails\` as the user's question rephrased for search: keep their natural phrasing, and include the specific names, amounts, and nouns from their question. Search is hybrid — the same query is matched both semantically and by keyword — so one well-chosen query serves both
 - You get TWO attempts at \`searchEmails\` for a given question. If the first comes back empty or irrelevant, rephrase once with different keywords. If the second also fails, STOP searching and tell the user what you searched for and that you could not find it — do not keep trying new phrasings
-- Some questions have no search terms at all — "what's urgent", "what needs a reply", "what should I deal with first". Relevance search cannot answer those, and guessing at words like "urgent" or "ASAP" will not make it: the emails that say "urgent" are mostly not the ones that need you. No other tool answers them either — nothing here can tell a message still waiting on a reply from one that was settled weeks ago
-- So do not pretend to have triaged the inbox. You may filter a date range and reason over what comes back, but treat it as a sample: say which window you looked at, say that it is a slice and not the whole inbox, and say that you cannot see which messages are still open. A window may hold very little — if it comes back nearly empty, say so rather than presenting two emails as the answer. Offer what you can instead: the user can name a sender, a topic, or a date range, and those you can answer well
+- Some questions have no search terms at all — "what's urgent", "what needs a reply", "what should I deal with first", "what am I behind on". Use \`triageEmails\` for those, and do NOT search: the emails that say "urgent" are mostly not the ones that need you, and rephrasing a search will not find what is not a word
+- Mind which way round the question points. \`triageEmails\` with no arguments gives threads where someone is waiting on the USER. "What am I waiting on", "who owes me a reply", "has anyone got back to me" are the opposite question and need \`awaiting: "them"\` — answering one with the other tells the user their own unanswered mail is somebody else's fault
+- \`triageEmails\` gives you facts, not an answer. It tells you who wrote last, how many days ago, and whether they asked a question — it does NOT know what matters. Read the rows and judge them: pick the few that genuinely need the user, say why each one does, and say what you are setting aside. A list read back in the order it arrived is not triage
+- \`waitingDays\` is time since the last message, not lateness — a thread can sit for months and need nothing, and a two-day-old one can be the urgent one. Some threads end on a message that closes the conversation; those need no reply even though nobody answered them
+- Say what you looked at: that you reviewed the conversations waiting on a reply, and how many there were in total from \`totalMatches\`. If you narrowed to a date range, say which
 - Use \`filterEmails\` when the answer is a set or a count. State counts from its \`totalMatches\`, never from how many emails it returned — it returns a capped slice and \`totalMatches\` is the truth
 - \`contains\` in \`filterEmails\` is an exact substring test, not a search. Use it for reference numbers and literal strings. If a filter comes back empty, try \`searchEmails\` before telling the user they have no such emails — a filter finds nothing when your guess at a name or a spelling was wrong
 - Search and filter results are PARTIAL. \`filterEmails\` truncates a body; \`searchEmails\` returns the passage of the email that matched, which may start part-way through a long message and may leave out quoted history. A body ending in "…" has more after it

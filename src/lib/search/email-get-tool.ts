@@ -44,9 +44,9 @@ export const EMAIL_GET_MAX_IDS = 5;
 
 /** Written for the model, not for a reader of this file. */
 export const EMAIL_GET_TOOL_DESCRIPTION =
-  "Fetch emails in full by their ids, using ids returned by searchEmails or " +
-  "filterEmails — this tool cannot find emails, only retrieve ones you have " +
-  "already seen. Search and filter results are truncated; these are not. Call " +
+  "Fetch emails in full by their ids, using ids returned by searchEmails, " +
+  "filterEmails or triageEmails — this tool cannot find emails, only retrieve " +
+  "ones you have already seen. Those results are truncated; these are not. Call " +
   "this before quoting an email, before reasoning about its detail, and whenever " +
   "a body you were given ends in an ellipsis. Set expandThread to also get every " +
   "other message in the same conversation, oldest first, which is what makes a " +
@@ -61,7 +61,8 @@ export const emailGetInputSchema = z.object({
     .max(EMAIL_GET_MAX_IDS)
     .describe(
       "The ids of the emails to fetch, exactly as they appeared in an earlier " +
-        "searchEmails or filterEmails result. Never invent one."
+        "searchEmails, filterEmails or triageEmails result — triage hands them " +
+        "over as `lastMessageId`. Never invent one."
     ),
   expandThread: z
     .boolean()

@@ -49,6 +49,48 @@ export type Email = {
 /** Namespaces every email document id: `email:email_1759404204639_rcsddgue6`. */
 export const EMAIL_SOURCE_TYPE = "email";
 
+/**
+ * Whose inbox this is.
+ *
+ * Inbound and outbound have no meaning without it, and it is the one thing the
+ * corpus does not state about itself. It is inferable — 546 of 547 emails carry
+ * this address on one side — but inferring it on every process start is a guess
+ * dressed as a lookup, and a corpus where the owner happened to be quiet would
+ * silently infer the wrong person.
+ *
+ * The owner has a second, work address in this corpus (`sarah.chen@techflow.com`,
+ * on one received email) and never sends from it. If that changes, outbound
+ * detection needs a set rather than a constant.
+ */
+export const INBOX_OWNER = "sarah.chen.personal@gmail.com";
+
+/**
+ * Senders with nobody on the other end: no-reply addresses, order confirmations,
+ * newsletters. Matched on the local part only, so the domain is irrelevant.
+ *
+ * This is a heuristic doing load-bearing work — it decides 158 of the 258
+ * threads that are otherwise "waiting on a reply", and the honest reason it is
+ * defensible is that it was checked by hand against all 56 distinct senders in
+ * the corpus rather than reasoned about. It catches exactly eight, with no false
+ * positives. `emails.test.ts` pins that list independently.
+ *
+ * What it deliberately does NOT do is generalise to role addresses. `bookings@`,
+ * `info@`, `admin@`, `quotes@`, `support@`, `events@`, `surveys@` and
+ * `customerservice@` are every one of them staffed by a person here, and ten of
+ * those threads end on a direct question to the user. A tempting
+ * "not a personal address" rule would hide the mail that most needs answering,
+ * which is the exact failure the triage tool exists to prevent.
+ *
+ * `orders@` is the one genuinely ambiguous prefix — two threads, both receipts —
+ * and is left out: two rows of noise is a cheaper mistake than the shape of rule
+ * that letting it in would license.
+ */
+const AUTOMATED_LOCAL_PART =
+  /^(no-?reply|do-?not-?reply|auto|autoconfirm|autoreply|notification|notifications|alert|alerts|newsletter|newsletters|mailer|bounce|bounces)([-._+].*)?$/i;
+
+export const isAutomatedSender = (address: string): boolean =>
+  AUTOMATED_LOCAL_PART.test(address.split("@")[0] ?? "");
+
 /** A starting guess to tune against evals, not a claim. */
 const EMAIL_FIELD_WEIGHTS = { subject: 3, body: 1, from: 2, to: 1 };
 
@@ -105,6 +147,51 @@ export const getThreadEmails = (opts: { threadId: string }): Email[] =>
   [...(emailsByThreadId().get(opts.threadId) ?? [])].sort((a, b) =>
     a.timestamp.localeCompare(b.timestamp)
   );
+
+/**
+ * A conversation reduced to the facts that say whether it needs the user.
+ *
+ * `awaiting` is the whole point: `"you"` means somebody wrote and the user has
+ * not answered, `"them"` means the user wrote last. It is derived from who sent
+ * the newest message and nothing else — no read receipts, no flags, because the
+ * corpus has none. That makes it a claim about turn-taking rather than about
+ * intent, and the tool that surfaces it says so.
+ */
+export type ThreadState = {
+  threadId: string;
+  messageCount: number;
+  lastMessage: Email;
+  awaiting: "you" | "them";
+};
+
+let cachedThreadStates: ThreadState[] | undefined;
+
+/**
+ * Every thread's state, derived once for the process lifetime — the corpus is
+ * static, and this is one pass over 547 emails.
+ *
+ * Order is not part of the contract. Callers sort for their own purpose.
+ */
+export const getThreadStates = (): ThreadState[] => {
+  cachedThreadStates ??= [...emailsByThreadId().entries()].map(
+    ([threadId, emails]) => {
+      // `reduce` rather than a sort: only the newest is wanted, and the corpus
+      // order is not guaranteed to be chronological within a thread.
+      const lastMessage = emails.reduce((latest, email) =>
+        email.timestamp > latest.timestamp ? email : latest
+      );
+
+      return {
+        threadId,
+        messageCount: emails.length,
+        lastMessage,
+        awaiting: lastMessage.from === INBOX_OWNER ? "them" : "you",
+      };
+    }
+  );
+
+  return cachedThreadStates;
+};
 
 /**
  * Vectors for the email chunks, from the committed artifact.
