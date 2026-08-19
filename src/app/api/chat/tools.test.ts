@@ -63,6 +63,31 @@ const persistedFilterPart = {
   },
 };
 
+/** And for a completed triage. Thread-shaped rows, not emails. */
+const persistedTriagePart = {
+  type: "tool-triageEmails",
+  toolCallId: "call-4",
+  state: "output-available",
+  input: { awaiting: "you" },
+  output: {
+    totalMatches: 43,
+    threads: [
+      {
+        threadId: "t_0417",
+        subject: "Rate lock confirmation",
+        messageCount: 3,
+        lastMessageId: "e_0417",
+        lastMessageFrom: "david.xu@firsthomemortgages.co.uk",
+        lastMessageAt: "2024-03-04T09:12:00Z",
+        lastMessageBody: "We have locked your rate at 4.6% for 60 days.",
+        waitingDays: 12,
+        lastSenderIsAutomated: false,
+        lastMessageAsksQuestion: false,
+      },
+    ],
+  },
+};
+
 /** And for a completed fetch. */
 const persistedGetPart = {
   type: "tool-getEmails",
@@ -114,6 +139,41 @@ describe("chat message validation", () => {
   it("accepts a persisted filter part", async () => {
     const result = await safeValidateUIMessages<MyMessage>({
       messages: historyWith(persistedFilterPart),
+      tools: chatTools,
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts a persisted triage part", async () => {
+    const result = await safeValidateUIMessages<MyMessage>({
+      messages: historyWith(persistedTriagePart),
+      tools: chatTools,
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  /**
+   * Triage's schema accepts the empty call on purpose, so the check that its
+   * input is validated at all has to come from a value that is wrong rather than
+   * from one that is missing.
+   */
+  it("checks a triage's input against its schema", async () => {
+    const result = await safeValidateUIMessages<MyMessage>({
+      messages: historyWith({
+        ...persistedTriagePart,
+        input: { awaiting: "everyone" },
+      }),
+      tools: chatTools,
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts a persisted triage part with no input at all", async () => {
+    const result = await safeValidateUIMessages<MyMessage>({
+      messages: historyWith({ ...persistedTriagePart, input: {} }),
       tools: chatTools,
     });
 

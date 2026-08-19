@@ -59,6 +59,7 @@ import { useFocusWhenNoChatIdPresent } from "./use-focus-chat-when-new-chat-butt
 const TOOL_TITLES = {
   "tool-searchEmails": "Searched your email",
   "tool-filterEmails": "Filtered your email",
+  "tool-triageEmails": "Reviewed what's waiting on you",
   "tool-getEmails": "Read your email in full",
 } as const;
 
@@ -206,12 +207,13 @@ export const Chat = (props: { chat: DB.Chat | null }) => {
                     );
                   case "tool-searchEmails":
                   case "tool-filterEmails":
+                  case "tool-triageEmails":
                   case "tool-getEmails":
                     // Collapsed by default — the transcript stays readable for
                     // anyone who does not care about the mechanics, and the
                     // header's state badge distinguishes in-flight from done.
                     //
-                    // All three email tools render the same way and differ only
+                    // All four email tools render the same way and differ only
                     // in their title: what the user needs from the block is the
                     // arguments the assistant actually used, which is what tells
                     // them whether a wrong answer came from retrieval or from

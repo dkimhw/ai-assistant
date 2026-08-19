@@ -1,5 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
+import { dateBoundary, withinBounds } from "@/lib/search/date-boundary";
 import {
   EMAIL_SEARCH_BODY_CHARACTERS,
   truncateBody,
@@ -54,45 +55,6 @@ export const EMAIL_FILTER_TOOL_DESCRIPTION =
   `at most ${EMAIL_FILTER_RESULT_COUNT} emails, newest first — so say how many ` +
   "there are from `totalMatches`, not from how many emails came back.";
 
-/**
- * Accepts `YYYY-MM-DD` or an ISO-8601 datetime, and nothing else. A model asked
- * for a date will otherwise offer "last tuesday" or "June 2024", and a boundary
- * that silently fails to parse is a filter that silently matches everything —
- * the failure this rejects at the door.
- *
- * The timezone designator is optional, and its absence means UTC. JavaScript
- * reads a bare `2024-06-01T09:00:00` as *local* time while reading a bare
- * `2024-06-01` as UTC, which would put the two forms hours apart for the same
- * intended instant; `asUtc` below removes that difference rather than leaving it
- * to surprise someone. A model that emits a datetime usually emits it without a
- * zone, so rejecting the form outright would cost a wasted step to discover.
- */
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const ISO_BOUNDARY =
-  /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})?)?$/;
-const HAS_TIMEZONE = /(Z|[+-]\d{2}:\d{2})$/;
-
-/** A datetime with no zone is UTC, matching how the date-only form parses. */
-const asUtc = (value: string) =>
-  ISO_DATE.test(value) || HAS_TIMEZONE.test(value) ? value : `${value}Z`;
-
-/**
- * The shape check is a `.regex`, not a `.refine`, because only the former
- * survives into the JSON Schema the model is shown — a refinement is invisible
- * to it, and an invisible rule can only be discovered by breaking it. The
- * `.refine` that follows catches what a pattern cannot: `2024-13-45` is
- * well-formed and not a date.
- */
-const boundary = (opts: { description: string }) =>
-  z
-    .string()
-    .regex(ISO_BOUNDARY, "expected YYYY-MM-DD or an ISO-8601 datetime")
-    .refine((value) => !Number.isNaN(Date.parse(asUtc(value))), {
-      message: "not a real date",
-    })
-    .describe(opts.description)
-    .optional();
-
 const criterion = (opts: { description: string }) =>
   z.string().min(1).describe(opts.description).optional();
 
@@ -108,13 +70,13 @@ export const emailFilterInputSchema = z
         "Filter by recipient, matched the same way as `from`. An email with " +
         "several recipients matches on any one of them.",
     }),
-    after: boundary({
+    after: dateBoundary({
       description:
         "Only emails at or after this point. `YYYY-MM-DD` means the start of " +
         "that day; an ISO-8601 datetime is used as given, and counts as UTC " +
         "unless it carries a timezone. Inclusive.",
     }),
-    before: boundary({
+    before: dateBoundary({
       description:
         "Only emails at or before this point. `YYYY-MM-DD` means the END of " +
         "that day, so a single date in both `after` and `before` gives you that " +
@@ -179,22 +141,6 @@ const includesFold = (opts: { haystack: string; needle: string }) =>
   opts.haystack.toLowerCase().includes(opts.needle.toLowerCase());
 
 /**
- * A bare `YYYY-MM-DD` covers the whole day: the start of it for `after`, the end
- * of it for `before`. Anything else — a full datetime — is used as given.
- *
- * The alternative, treating a bare date as midnight at both ends, makes
- * `before: "2024-06-01"` exclude everything actually sent on the 1st. That is
- * the kind of off-by-one nobody notices in an answer, which is why it is spelled
- * out here and pinned by a boundary test.
- */
-const boundaryMs = (opts: { value: string; edge: "start" | "end" }) =>
-  Date.parse(
-    ISO_DATE.test(opts.value) && opts.edge === "end"
-      ? `${opts.value}T23:59:59.999Z`
-      : asUtc(opts.value)
-  );
-
-/**
  * The body as the model should see it.
  *
  * Ordinarily that is the first `EMAIL_SEARCH_BODY_CHARACTERS` characters, same
@@ -249,21 +195,11 @@ const matches = (opts: { email: Email; criteria: EmailFilterInput }) => {
   )
     return false;
 
-  const sentAt = Date.parse(email.timestamp);
-
-  if (
-    criteria.after &&
-    sentAt < boundaryMs({ value: criteria.after, edge: "start" })
-  )
-    return false;
-
-  if (
-    criteria.before &&
-    sentAt > boundaryMs({ value: criteria.before, edge: "end" })
-  )
-    return false;
-
-  return true;
+  return withinBounds({
+    timestamp: email.timestamp,
+    after: criteria.after,
+    before: criteria.before,
+  });
 };
 
 export const createEmailFilterTool = () =>

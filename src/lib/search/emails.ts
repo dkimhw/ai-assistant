@@ -49,6 +49,48 @@ export type Email = {
 /** Namespaces every email document id: `email:email_1759404204639_rcsddgue6`. */
 export const EMAIL_SOURCE_TYPE = "email";
 
+/**
+ * Whose inbox this is.
+ *
+ * Inbound and outbound have no meaning without it, and it is the one thing the
+ * corpus does not state about itself. It is inferable — 546 of 547 emails carry
+ * this address on one side — but inferring it on every process start is a guess
+ * dressed as a lookup, and a corpus where the owner happened to be quiet would
+ * silently infer the wrong person.
+ *
+ * The owner has a second, work address in this corpus (`sarah.chen@techflow.com`,
+ * on one received email) and never sends from it. If that changes, outbound
+ * detection needs a set rather than a constant.
+ */
+export const INBOX_OWNER = "sarah.chen.personal@gmail.com";
+
+/**
+ * Senders with nobody on the other end: no-reply addresses, order confirmations,
+ * newsletters. Matched on the local part only, so the domain is irrelevant.
+ *
+ * This is a heuristic doing load-bearing work — it decides 158 of the 258
+ * threads that are otherwise "waiting on a reply", and the honest reason it is
+ * defensible is that it was checked by hand against all 56 distinct senders in
+ * the corpus rather than reasoned about. It catches exactly eight, with no false
+ * positives. `emails.test.ts` pins that list independently.
+ *
+ * What it deliberately does NOT do is generalise to role addresses. `bookings@`,
+ * `info@`, `admin@`, `quotes@`, `support@`, `events@`, `surveys@` and
+ * `customerservice@` are every one of them staffed by a person here, and ten of
+ * those threads end on a direct question to the user. A tempting
+ * "not a personal address" rule would hide the mail that most needs answering,
+ * which is the exact failure the triage tool exists to prevent.
+ *
+ * `orders@` is the one genuinely ambiguous prefix — two threads, both receipts —
+ * and is left out: two rows of noise is a cheaper mistake than the shape of rule
+ * that letting it in would license.
+ */
+const AUTOMATED_LOCAL_PART =
+  /^(no-?reply|do-?not-?reply|auto|autoconfirm|autoreply|notification|notifications|alert|alerts|newsletter|newsletters|mailer|bounce|bounces)([-._+].*)?$/i;
+
+export const isAutomatedSender = (address: string): boolean =>
+  AUTOMATED_LOCAL_PART.test(address.split("@")[0] ?? "");
+
 /** A starting guess to tune against evals, not a claim. */
 const EMAIL_FIELD_WEIGHTS = { subject: 3, body: 1, from: 2, to: 1 };
 
@@ -60,15 +102,73 @@ const VECTORS_PATH = path.join(process.cwd(), "data", "email-vectors.json");
 let cachedEmails: Email[] | undefined;
 let cachedEmailsById: Map<string, Email> | undefined;
 let cachedEmailsByThreadId: Map<string, Email[]> | undefined;
+let cachedThreadStates: ThreadState[] | undefined;
 
-/** The whole corpus, read from disk once. Server-only. */
+/** The stamp every cache above was built from. `undefined` before the first read. */
+let cachedStamp: string | undefined;
+
+/**
+ * `mtime:size`, which is what stands in for "which generation of the file is
+ * this". Size is in there because mtime is a float of milliseconds and two
+ * writes inside one tick would otherwise be one generation; an append that
+ * changes the length is then caught regardless.
+ */
+const corpusStamp = (): string => {
+  const stats = fs.statSync(EMAILS_PATH);
+  return `${stats.mtimeMs}:${stats.size}`;
+};
+
+/**
+ * The corpus is read once and held for the process lifetime, which is the right
+ * trade for a static file and the wrong one the moment something appends to it:
+ * a new email is invisible — to triage, to `getEmails`, to the index — until the
+ * server restarts, and nothing says so.
+ *
+ * A `stat` before each read removes the restart. It costs a few microseconds
+ * against a local file, which is far less than the JSON parse it guards, and it
+ * runs on the cache-hit path too because that is the path that would otherwise
+ * serve stale data.
+ *
+ * Mtime, not a content hash: hashing 547 emails on every lookup to catch an edit
+ * that somehow preserved the timestamp is the wrong trade in the other
+ * direction. A write that leaves mtime untouched is not something this notices.
+ *
+ * All four caches drop together. They are derived from one array, and a mixture
+ * of generations is a worse failure than either generation alone — a thread
+ * state whose `lastMessage` is not in `emailsById` is not a state this code has
+ * any handling for.
+ */
+const invalidateIfChanged = (): void => {
+  const stamp = corpusStamp();
+  if (stamp === cachedStamp) return;
+
+  cachedStamp = stamp;
+  cachedEmails = undefined;
+  cachedEmailsById = undefined;
+  cachedEmailsByThreadId = undefined;
+  cachedThreadStates = undefined;
+};
+
+/**
+ * The whole corpus, re-read from disk whenever `emails.json` changes underneath
+ * the process and served from memory otherwise. Server-only.
+ *
+ * Every derived getter below goes through this one *before* consulting its own
+ * cache, so the freshness check lives in exactly one place and a stale derived
+ * map cannot outlive the array it came from.
+ */
 export const getAllEmails = (): Email[] => {
+  invalidateIfChanged();
   cachedEmails ??= JSON.parse(fs.readFileSync(EMAILS_PATH, "utf-8")) as Email[];
   return cachedEmails;
 };
 
 const emailsById = (): Map<string, Email> => {
-  cachedEmailsById ??= new Map(getAllEmails().map((email) => [email.id, email]));
+  // Read first, and deliberately not inside the `??=` — the read is what
+  // notices a changed file, and short-circuiting past it on a cache hit is
+  // exactly how this cache would go stale.
+  const emails = getAllEmails();
+  cachedEmailsById ??= new Map(emails.map((email) => [email.id, email]));
   return cachedEmailsById;
 };
 
@@ -80,10 +180,12 @@ export const getEmailById = (id: string): Email | undefined =>
   emailsById().get(id);
 
 const emailsByThreadId = (): Map<string, Email[]> => {
+  // Read before the cache check, for the reason given in `emailsById`.
+  const emails = getAllEmails();
   if (cachedEmailsByThreadId) return cachedEmailsByThreadId;
 
   const byThread = new Map<string, Email[]>();
-  for (const email of getAllEmails()) {
+  for (const email of emails) {
     const thread = byThread.get(email.threadId);
     if (thread) thread.push(email);
     else byThread.set(email.threadId, [email]);
@@ -105,6 +207,53 @@ export const getThreadEmails = (opts: { threadId: string }): Email[] =>
   [...(emailsByThreadId().get(opts.threadId) ?? [])].sort((a, b) =>
     a.timestamp.localeCompare(b.timestamp)
   );
+
+/**
+ * A conversation reduced to the facts that say whether it needs the user.
+ *
+ * `awaiting` is the whole point: `"you"` means somebody wrote and the user has
+ * not answered, `"them"` means the user wrote last. It is derived from who sent
+ * the newest message and nothing else — no read receipts, no flags, because the
+ * corpus has none. That makes it a claim about turn-taking rather than about
+ * intent, and the tool that surfaces it says so.
+ */
+export type ThreadState = {
+  threadId: string;
+  messageCount: number;
+  lastMessage: Email;
+  awaiting: "you" | "them";
+};
+
+/**
+ * Every thread's state, derived once per generation of the corpus — one pass
+ * over 547 emails, redone only when `emails.json` changes.
+ *
+ * Order is not part of the contract. Callers sort for their own purpose.
+ */
+export const getThreadStates = (): ThreadState[] => {
+  // Read before the cache check, for the reason given in `emailsById`. This is
+  // the cache that matters most: a new message flips its thread's `awaiting`
+  // and replaces the `lastMessage` every triage field is computed from.
+  const byThread = emailsByThreadId();
+  cachedThreadStates ??= [...byThread.entries()].map(
+    ([threadId, emails]) => {
+      // `reduce` rather than a sort: only the newest is wanted, and the corpus
+      // order is not guaranteed to be chronological within a thread.
+      const lastMessage = emails.reduce((latest, email) =>
+        email.timestamp > latest.timestamp ? email : latest
+      );
+
+      return {
+        threadId,
+        messageCount: emails.length,
+        lastMessage,
+        awaiting: lastMessage.from === INBOX_OWNER ? "them" : "you",
+      };
+    }
+  );
+
+  return cachedThreadStates;
+};
 
 /**
  * Vectors for the email chunks, from the committed artifact.
@@ -140,6 +289,10 @@ const emailVectors = (opts: { chunks: DocumentChunk[] }) => {
  * The email corpus as a document source. `id` is kept native — the corpus ships
  * 547 stable ids that are worth keeping greppable against `emails.json`, and a
  * content-addressed id would move every time a body was edited.
+ *
+ * `version` is the same stamp the corpus caches above use, so the index and the
+ * corpus it was built from cannot disagree about which generation of
+ * `emails.json` they are.
  */
 export const emailSource: DocumentSource = {
   sourceType: EMAIL_SOURCE_TYPE,
@@ -165,6 +318,7 @@ export const emailSource: DocumentSource = {
       },
     }),
   vectors: emailVectors,
+  version: corpusStamp,
 };
 
 /** The `Email` a search document came from, by its native id. */

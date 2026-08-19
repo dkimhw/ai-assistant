@@ -2,7 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Embedder } from "@/lib/search/embedder";
-import { getAllEmails, searchEmails } from "@/lib/search/emails";
+import {
+  getAllEmails,
+  getThreadStates,
+  INBOX_OWNER,
+  isAutomatedSender,
+  searchEmails,
+} from "@/lib/search/emails";
 import {
   decodeVectors,
   type VectorArtifact,
@@ -53,6 +59,135 @@ const fixtureEmbedder = (): Embedder => {
 
 const subjects = (results: Array<{ email: { subject: string } }>) =>
   results.map((result) => result.email.subject);
+
+/**
+ * The eight automated senders in the committed corpus, established by reading
+ * all 56 distinct senders rather than by running the predicate and writing down
+ * what it said. That is the whole value of this list: it is an independent
+ * oracle, so a change to the pattern that starts catching people disagrees with
+ * it instead of quietly redefining the right answer.
+ */
+const AUTOMATED_SENDERS = [
+  "alerts@skyscanner.net",
+  "auto-confirm@amazon.co.uk",
+  "newsletters@theguardian.com",
+  "no-reply@gov.uk",
+  "noreply@booking.com",
+  "noreply@britishgas.co.uk",
+  "noreply@lloydsbank.co.uk",
+  "noreply@spotify.com",
+];
+
+describe("isAutomatedSender", () => {
+  it("catches every automated sender in the corpus", () => {
+    for (const address of AUTOMATED_SENDERS) {
+      expect(isAutomatedSender(address)).toBe(true);
+    }
+  });
+
+  it("catches no one else in the corpus", () => {
+    const automated = new Set(AUTOMATED_SENDERS);
+    const senders = new Set(getAllEmails().map((email) => email.from));
+
+    const wrong = [...senders].filter(
+      (address) => isAutomatedSender(address) !== automated.has(address)
+    );
+
+    expect(wrong).toEqual([]);
+  });
+
+  /**
+   * The trap, and the reason this test is worth more than the two above it. A
+   * role address looks automated and mostly is not: every one of these is
+   * staffed by a person in this corpus, and several are asking the user a direct
+   * question. A predicate that generalised from `noreply@` to "not a personal
+   * address" would hide precisely the mail that most needs a reply.
+   */
+  it("does not treat a staffed role address as automated", () => {
+    const staffed = [
+      "admin@climbingworks.com",
+      "bookings@adventuresouthnz.com",
+      "customerservice@bhphotovideo.com",
+      "events@manchesterphotosoc.org",
+      "info@manchesterphotosoc.org",
+      "prints@manchesterphotolab.co.uk",
+      "quotes@homerunremovals.co.uk",
+      "support@skyscanner.net",
+      "surveys@houseinspectionsuk.co.uk",
+    ];
+
+    for (const address of staffed) {
+      expect(isAutomatedSender(address)).toBe(false);
+    }
+  });
+
+  it("ignores case and the domain", () => {
+    expect(isAutomatedSender("NoReply@Example.com")).toBe(true);
+    expect(isAutomatedSender("sarah@noreply-consulting.com")).toBe(false);
+  });
+
+  it("does not fire on a name that merely starts with one of the words", () => {
+    // `alerts` is a prefix of nothing here, but `alert` must not swallow
+    // `alertonogroup@…` and `auto` must not swallow `automotive@…`.
+    expect(isAutomatedSender("automotive@example.com")).toBe(false);
+    expect(isAutomatedSender("noreplyable@example.com")).toBe(false);
+  });
+});
+
+describe("getThreadStates", () => {
+  it("derives the corpus's threads once", () => {
+    expect(getThreadStates()).toBe(getThreadStates());
+    expect(getThreadStates()).toHaveLength(295);
+  });
+
+  it("accounts for every email exactly once", () => {
+    const counted = getThreadStates().reduce(
+      (total, thread) => total + thread.messageCount,
+      0
+    );
+
+    expect(counted).toBe(getAllEmails().length);
+  });
+
+  it("takes the last message by time, not by corpus order", () => {
+    for (const thread of getThreadStates()) {
+      expect(thread.lastMessage.threadId).toBe(thread.threadId);
+      expect(thread.lastMessage.timestamp).toBe(
+        getAllEmails()
+          .filter((email) => email.threadId === thread.threadId)
+          .map((email) => email.timestamp)
+          .sort()
+          .at(-1)
+      );
+    }
+  });
+
+  it("says the user is awaited when someone else spoke last", () => {
+    for (const thread of getThreadStates()) {
+      expect(thread.awaiting).toBe(
+        thread.lastMessage.from === INBOX_OWNER ? "them" : "you"
+      );
+    }
+  });
+
+  /**
+   * Loose on purpose — the corpus can grow. What is pinned is the shape of the
+   * problem the triage tool exists for: "unanswered" on its own selects almost
+   * everything, and only stacking the automated-sender test makes it a set worth
+   * showing someone.
+   */
+  it("leaves a set worth triaging once automated senders are dropped", () => {
+    const states = getThreadStates();
+    const awaitingUser = states.filter((thread) => thread.awaiting === "you");
+    const human = awaitingUser.filter(
+      (thread) => !isAutomatedSender(thread.lastMessage.from)
+    );
+
+    expect(awaitingUser.length / states.length).toBeGreaterThan(0.8);
+    expect(human.length).toBeLessThan(awaitingUser.length / 2);
+    expect(human.length).toBeGreaterThan(20);
+  });
+});
 
 describe("searchEmails", () => {
   const embedder = fixtureEmbedder();

@@ -329,6 +329,65 @@ describe("searchDocuments", () => {
     expect(reads).toBe(1);
   });
 
+  it("reindexes a source that reports a new version", async () => {
+    // The counterpart to the memo above, and the reason it is safe to hold an
+    // index for the whole process: a source whose documents changed underneath
+    // it says so, and gets rebuilt rather than serving the corpus it was
+    // started with.
+    let documents = documentsFrom([["a", "kayak hire"]]);
+    let version = 1;
+
+    const mutable: DocumentSource[] = [
+      {
+        ...source({ sourceType: "note", documents: [] }),
+        all: () => documents,
+        version: () => version,
+      },
+    ];
+
+    const before = await searchDocuments({
+      query: "canoe",
+      sources: mutable,
+      embedder: noEmbedder,
+    });
+    expect(ids(before)).toEqual([]);
+
+    documents = documentsFrom([
+      ["a", "kayak hire"],
+      ["b", "canoe hire"],
+    ]);
+    version = 2;
+
+    const after = await searchDocuments({
+      query: "canoe",
+      sources: mutable,
+      embedder: noEmbedder,
+    });
+    expect(ids(after)).toEqual(["note:b"]);
+  });
+
+  it("holds the index while a source's version is unchanged", async () => {
+    // The version is the whole signal — a source that changed without saying so
+    // is deliberately not noticed, because the alternative is re-reading every
+    // corpus on every query to find out.
+    let reads = 0;
+    const versioned: DocumentSource[] = [
+      {
+        ...source({ sourceType: "note", documents: [] }),
+        all: () => {
+          reads++;
+          return documentsFrom([["a", "kayak hire"]]);
+        },
+        version: () => "unchanged",
+      },
+    ];
+
+    await searchDocuments({ query: "kayak", sources: versioned, embedder: noEmbedder });
+    await searchDocuments({ query: "hire", sources: versioned, embedder: noEmbedder });
+
+    expect(reads).toBe(1);
+  });
+
   it("narrows to the wanted sources before applying the limit", async () => {
     const sources = [
       source({

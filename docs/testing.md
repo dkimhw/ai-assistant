@@ -3,7 +3,7 @@
 A description of what the test suite currently is, what each test buys us, and
 which tests are load-bearing enough to be worth your review time.
 
-Status as of this document: **180 tests, 11 files, all passing, ~1.1s.**
+Status as of this document: **215 tests, 12 files, all passing, ~1.1s.**
 Almost every test lives in `src/lib/search/`; the one exception is described
 below and is a deliberate one.
 
@@ -14,11 +14,12 @@ src/lib/search/rrf.test.ts               17 tests
 src/lib/search/email-chunks.test.ts       9 tests
 src/lib/search/vector-artifact.test.ts   11 tests
 src/lib/search/documents.test.ts         26 tests
-src/lib/search/emails.test.ts             9 tests
+src/lib/search/emails.test.ts            19 tests
 src/lib/search/email-search-tool.test.ts 21 tests
 src/lib/search/email-filter-tool.test.ts 33 tests
+src/lib/search/email-triage-tool.test.ts 22 tests
 src/lib/search/email-get-tool.test.ts    21 tests
-src/app/api/chat/tools.test.ts            7 tests
+src/app/api/chat/tools.test.ts           10 tests
 ```
 
 > The test-by-test breakdown in section 3 covers `tokenize`, `bm25`, `rrf`,
@@ -28,6 +29,49 @@ src/app/api/chat/tools.test.ts            7 tests
 > `email-filter-tool.test.ts` and `email-get-tool.test.ts` with the filter and
 > fetch tools (issue #10); both are summarised below. Reranking (issue #11) added
 > tests to `documents.test.ts` and `email-search-tool.test.ts`, summarised next.
+> Triage (issue #15) added `email-triage-tool.test.ts`, ten tests to
+> `emails.test.ts`, and three to `tools.test.ts`; summarised below.
+
+### Triage
+
+Two seams, and the interesting one is not the tool.
+
+`isAutomatedSender` is tested against an **independently established** list of
+the corpus's eight automated senders — established by reading all 56 distinct
+senders, not by running the predicate and recording its output. That is the
+whole value: a change to the pattern disagrees with the list instead of quietly
+redefining what "correct" means. A test that recomputed the expectation the way
+the implementation does would pass by construction. The third test in that block
+is the one that earns its place — it pins that nine *staffed* role addresses
+(`bookings@`, `info@`, `admin@`, `support@`, `quotes@`, …) are **not**
+automated, because the tempting generalisation from `noreply@` to "not a
+personal address" would hide exactly the mail that needs answering.
+
+`getThreadStates` is pinned on conservation (every email counted exactly once,
+across 295 threads), on taking the last message by time rather than by corpus
+order, and on one loose property: "unanswered" alone selects over 80% of
+threads, and stacking the automated test cuts it to under half of that. That is
+the shape of the problem the tool exists for, asserted loosely so the corpus can
+grow.
+
+The most valuable test in the file is the one that pins that threads dated in
+the *future* are omitted. It looks like a display concern and is a ranking one:
+newest-first put all 8 such threads at the top of a 15-row cap, each reporting
+"0 days waited", so over half the window went to mail that had not been sent.
+The test asserts the count that survives (92 of 100), not the formatting.
+
+The tool's own tests inject the **clock**, for the same reason every other
+collaborator in `search/` is injected: `waitingDays` is the one field derived
+from outside the corpus, and a test reading the real clock would drift a day at
+a time until it failed for no reconstructable reason. Counts are exact, like the
+filter tool's and unlike the search tool's — triage is a predicate, so there is
+no reason to settle for less than the number. One test pins that
+`includeAutomated` cannot move the `awaiting: "them"` count, which is what
+catches a filter written against the wrong end of the thread; another pins that
+the two directions partition the corpus. The `lastMessageAsksQuestion` test uses
+the corpus's newest waiting thread, which ends "I'll draft something up and send
+you the final version" — no question, nothing needed — as the case showing the
+field reports an observation rather than a verdict.
 
 ### Reranking
 
