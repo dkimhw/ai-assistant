@@ -102,15 +102,73 @@ const VECTORS_PATH = path.join(process.cwd(), "data", "email-vectors.json");
 let cachedEmails: Email[] | undefined;
 let cachedEmailsById: Map<string, Email> | undefined;
 let cachedEmailsByThreadId: Map<string, Email[]> | undefined;
+let cachedThreadStates: ThreadState[] | undefined;
 
-/** The whole corpus, read from disk once. Server-only. */
+/** The stamp every cache above was built from. `undefined` before the first read. */
+let cachedStamp: string | undefined;
+
+/**
+ * `mtime:size`, which is what stands in for "which generation of the file is
+ * this". Size is in there because mtime is a float of milliseconds and two
+ * writes inside one tick would otherwise be one generation; an append that
+ * changes the length is then caught regardless.
+ */
+const corpusStamp = (): string => {
+  const stats = fs.statSync(EMAILS_PATH);
+  return `${stats.mtimeMs}:${stats.size}`;
+};
+
+/**
+ * The corpus is read once and held for the process lifetime, which is the right
+ * trade for a static file and the wrong one the moment something appends to it:
+ * a new email is invisible — to triage, to `getEmails`, to the index — until the
+ * server restarts, and nothing says so.
+ *
+ * A `stat` before each read removes the restart. It costs a few microseconds
+ * against a local file, which is far less than the JSON parse it guards, and it
+ * runs on the cache-hit path too because that is the path that would otherwise
+ * serve stale data.
+ *
+ * Mtime, not a content hash: hashing 547 emails on every lookup to catch an edit
+ * that somehow preserved the timestamp is the wrong trade in the other
+ * direction. A write that leaves mtime untouched is not something this notices.
+ *
+ * All four caches drop together. They are derived from one array, and a mixture
+ * of generations is a worse failure than either generation alone — a thread
+ * state whose `lastMessage` is not in `emailsById` is not a state this code has
+ * any handling for.
+ */
+const invalidateIfChanged = (): void => {
+  const stamp = corpusStamp();
+  if (stamp === cachedStamp) return;
+
+  cachedStamp = stamp;
+  cachedEmails = undefined;
+  cachedEmailsById = undefined;
+  cachedEmailsByThreadId = undefined;
+  cachedThreadStates = undefined;
+};
+
+/**
+ * The whole corpus, re-read from disk whenever `emails.json` changes underneath
+ * the process and served from memory otherwise. Server-only.
+ *
+ * Every derived getter below goes through this one *before* consulting its own
+ * cache, so the freshness check lives in exactly one place and a stale derived
+ * map cannot outlive the array it came from.
+ */
 export const getAllEmails = (): Email[] => {
+  invalidateIfChanged();
   cachedEmails ??= JSON.parse(fs.readFileSync(EMAILS_PATH, "utf-8")) as Email[];
   return cachedEmails;
 };
 
 const emailsById = (): Map<string, Email> => {
-  cachedEmailsById ??= new Map(getAllEmails().map((email) => [email.id, email]));
+  // Read first, and deliberately not inside the `??=` — the read is what
+  // notices a changed file, and short-circuiting past it on a cache hit is
+  // exactly how this cache would go stale.
+  const emails = getAllEmails();
+  cachedEmailsById ??= new Map(emails.map((email) => [email.id, email]));
   return cachedEmailsById;
 };
 
@@ -122,10 +180,12 @@ export const getEmailById = (id: string): Email | undefined =>
   emailsById().get(id);
 
 const emailsByThreadId = (): Map<string, Email[]> => {
+  // Read before the cache check, for the reason given in `emailsById`.
+  const emails = getAllEmails();
   if (cachedEmailsByThreadId) return cachedEmailsByThreadId;
 
   const byThread = new Map<string, Email[]>();
-  for (const email of getAllEmails()) {
+  for (const email of emails) {
     const thread = byThread.get(email.threadId);
     if (thread) thread.push(email);
     else byThread.set(email.threadId, [email]);
@@ -164,16 +224,18 @@ export type ThreadState = {
   awaiting: "you" | "them";
 };
 
-let cachedThreadStates: ThreadState[] | undefined;
-
 /**
- * Every thread's state, derived once for the process lifetime — the corpus is
- * static, and this is one pass over 547 emails.
+ * Every thread's state, derived once per generation of the corpus — one pass
+ * over 547 emails, redone only when `emails.json` changes.
  *
  * Order is not part of the contract. Callers sort for their own purpose.
  */
 export const getThreadStates = (): ThreadState[] => {
-  cachedThreadStates ??= [...emailsByThreadId().entries()].map(
+  // Read before the cache check, for the reason given in `emailsById`. This is
+  // the cache that matters most: a new message flips its thread's `awaiting`
+  // and replaces the `lastMessage` every triage field is computed from.
+  const byThread = emailsByThreadId();
+  cachedThreadStates ??= [...byThread.entries()].map(
     ([threadId, emails]) => {
       // `reduce` rather than a sort: only the newest is wanted, and the corpus
       // order is not guaranteed to be chronological within a thread.
@@ -227,6 +289,10 @@ const emailVectors = (opts: { chunks: DocumentChunk[] }) => {
  * The email corpus as a document source. `id` is kept native — the corpus ships
  * 547 stable ids that are worth keeping greppable against `emails.json`, and a
  * content-addressed id would move every time a body was edited.
+ *
+ * `version` is the same stamp the corpus caches above use, so the index and the
+ * corpus it was built from cannot disagree about which generation of
+ * `emails.json` they are.
  */
 export const emailSource: DocumentSource = {
   sourceType: EMAIL_SOURCE_TYPE,
@@ -252,6 +318,7 @@ export const emailSource: DocumentSource = {
       },
     }),
   vectors: emailVectors,
+  version: corpusStamp,
 };
 
 /** The `Email` a search document came from, by its native id. */

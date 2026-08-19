@@ -188,9 +188,18 @@ are `${documentId}#${n}`. `:` and `#` are reserved and rejected at index time;
 formatting and parsing live only in `document-id.ts`. A source with no natural id
 declares `hasNativeIds: false` and gets a content hash instead.
 
-The corpus and the built indexes are memoised for the process lifetime. `emails.ts`
-and `documents.ts` are **server-only** — they read from disk with `node:fs`.
-Design rationale is in `docs/bm25-search.md` and `docs/hybrid-search.md`.
+The corpus and the built indexes are memoised until the underlying file changes.
+`emails.ts` stamps `data/emails.json` with `mtime:size` and drops all four of its
+caches — emails, by-id, by-thread and thread states, together — when the stamp
+moves, so an appended email is visible to triage, filter and fetch without a
+restart. A `DocumentSource` may declare `version()` to get the same treatment for
+the search index; `emailSource` returns that stamp. A source that omits it is
+indexed exactly once, as before. Note that appending emails without re-running
+`pnpm run build:vectors` makes the *next* semantic search throw on the vector
+fingerprint — deliberately loud, since the alternative is ranking half the corpus
+in silence. `emails.ts` and `documents.ts` are **server-only** — they read from
+disk with `node:fs`. Design rationale is in `docs/bm25-search.md` and
+`docs/hybrid-search.md`.
 
 Adding a kind of document: write a `DocumentSource`, register it in
 `documents.ts`, run `pnpm run build:vectors`.

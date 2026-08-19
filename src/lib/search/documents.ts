@@ -97,6 +97,24 @@ export type DocumentSource = {
     id: string;
     vector: Float32Array;
   }>;
+  /**
+   * A token that changes when this source's documents change — a file mtime, a
+   * revision counter, anything cheap and comparable. The corpus is indexed once
+   * and held for the process lifetime, so a source that can change underneath a
+   * running server needs a way to say so; without this the index is whatever the
+   * corpus looked like at first search.
+   *
+   * Read on every `searchDocuments` call, so it must be cheap. A source that
+   * genuinely cannot change omits it and is indexed exactly once.
+   *
+   * Reindexing costs more than a rebuilt BM25 index: a source whose committed
+   * vectors no longer match its documents will throw from `vectors()` on the
+   * next semantic search, by the fingerprint check that exists to stop stale
+   * embeddings ranking silently. That is the intended outcome — the failure
+   * names its own fix — but it does mean changing a corpus without rebuilding
+   * its vectors takes search down loudly rather than degrading it quietly.
+   */
+  version?: () => string | number;
 };
 
 /**
@@ -360,18 +378,31 @@ const buildCorpus = (sources: DocumentSource[]): Corpus => {
 };
 
 /**
- * Memoised per set of sources — the registry is indexed once for the process
- * lifetime, and a test's injected sources are indexed once per array it passes.
- * Keyed by array identity, which is what makes the registry's entry stable.
+ * Memoised per set of sources — the registry is indexed once, and a test's
+ * injected sources are indexed once per array it passes. Keyed by array
+ * identity, which is what makes the registry's entry stable.
+ *
+ * The versions the entry was built from are held with it, so a source that
+ * reports a new one gets the whole corpus rebuilt. One index spans every
+ * source, so there is no rebuilding of a single source's half.
  */
-const corpusCache = new WeakMap<DocumentSource[], Corpus>();
+const corpusCache = new WeakMap<
+  DocumentSource[],
+  { corpus: Corpus; versions: Array<string | number | undefined> }
+>();
+
+/** `undefined` for a source that declares no version — one that never changes. */
+const versionsOf = (sources: DocumentSource[]) =>
+  sources.map((source) => source.version?.());
 
 const getCorpus = (sources: DocumentSource[]): Corpus => {
+  const versions = versionsOf(sources);
   const cached = corpusCache.get(sources);
-  if (cached) return cached;
+  if (cached && cached.versions.every((v, index) => v === versions[index]))
+    return cached.corpus;
 
   const corpus = buildCorpus(sources);
-  corpusCache.set(sources, corpus);
+  corpusCache.set(sources, { corpus, versions });
   return corpus;
 };
 
