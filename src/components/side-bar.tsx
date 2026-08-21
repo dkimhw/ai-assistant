@@ -1,5 +1,6 @@
 "use client";
 import { AddMemoryButton } from "@/app/add-memory-button";
+import { ChatList } from "@/app/chat-list";
 import { MemoryList } from "@/app/memory-list";
 import {
   Sidebar,
@@ -13,7 +14,6 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarMenuSub,
 } from "@/components/ui/sidebar";
 import { DB } from "@/lib/persistence-layer";
 import {
@@ -82,25 +82,10 @@ export function SideBar({
             </Link>
           </SidebarGroupAction>
           <SidebarGroupContent className="max-h-[300px] overflow-y-auto">
-            {chats.length === 0 ? (
-              <div className="px-2 mt-1 text-xs text-sidebar-foreground/50">
-                No chats yet! Start by sending a message.
-              </div>
-            ) : (
-              <SidebarMenuSub>
-                {chats.map((chat) => (
-                  <SidebarMenuItem key={chat.id}>
-                    <SidebarMenuButton
-                      asChild
-                      isActive={chatIdFromSearchParams === chat.id}
-                      className="truncate"
-                    >
-                      <Link href={`/?chatId=${chat.id}`}>{chat.title}</Link>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                ))}
-              </SidebarMenuSub>
-            )}
+            <ChatList
+              chats={chats}
+              chatIdFromSearchParams={chatIdFromSearchParams}
+            />
           </SidebarGroupContent>
         </SidebarGroup>
         <SidebarGroup>

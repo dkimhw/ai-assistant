@@ -35,9 +35,9 @@ memory store, and a BM25F lexical search over an email corpus.
   `src/app/api/chat/model.ts`.
   `@ai-sdk/google` and `@ai-sdk/anthropic` are installed but not wired up.
 - **Streaming**: `streamText` composed into a custom `createUIMessageStream`
-- **Tools**: four over the email corpus — relevance search, exact-criteria
-  filter, thread-state triage, and full-text fetch — given to the chat loop with
-  a step limit
+- **Tools**: six — four over the email corpus (relevance search, exact-criteria
+  filter, thread-state triage, full-text fetch) plus two that write memories
+  (`saveMemory`, `updateMemory`) — given to the chat loop with a step limit
 - **Persistence**: a single JSON file, `data/db.local.json` (no database)
 - **Search**: hand-rolled BM25F over `data/emails.json`, fused with a semantic
   ranking by RRF, then reranked by an LLM for the chat tool only; no search
@@ -54,7 +54,8 @@ memory store, and a BM25F lexical search over an email corpus.
 - `src/app/api/chat/route.ts` — streaming chat endpoint; also exports `MyMessage`
 - `src/app/api/chat/generate-title.ts` — one-shot `generateText` title generation
 - `src/app/api/chat/model.ts` — the model ids and the OpenAI key convention
-- `src/app/api/chat/tools.ts` — the tool set the chat loop is given
+- `src/app/api/chat/tools.ts` — `createChatTools`, the tool set the chat loop is
+  given, plus the `chatTools` instance validation is built from
 - `src/app/actions/memories.ts` — server actions for memory CRUD
 - `src/app/search/` — email search page plus its route-local components
 - `src/lib/search/` — `bm25.ts`, `tokenize.ts`, `rrf.ts`, `semantic.ts`,
@@ -65,12 +66,16 @@ memory store, and a BM25F lexical search over an email corpus.
   `INBOX_OWNER`, `isAutomatedSender` and `getThreadStates`), and
   `email-search-tool.ts`, `email-filter-tool.ts`, `email-triage-tool.ts` and
   `email-get-tool.ts` (the adapter shaped as four AI SDK tools), with tests
+- `src/lib/memory.ts` — the memories prompt block and modal-path title
+  generation; `src/lib/memory-tools.ts` — the two memory write tools
 - `src/lib/persistence-layer.ts` — JSON-file store for chats and memories
 - `src/components/ai-elements/` — AI chat UI primitives
 - `src/components/ui/` — shadcn/Radix primitives
-- `docs/` — `bm25-search.md` and `hybrid-search.md` (design), `chunking.md`
-  (chunking strategies and the one we chose), `testing.md` (test suite),
-  `bm25-explained.html`, `hybrid-search-explained.html`
+- `CONTEXT.md` — the project glossary; `docs/adr/` — architectural decisions
+- `docs/` — `bm25-search.md`, `hybrid-search.md` and `memories-in-chat.md`
+  (design), `chunking.md` (chunking strategies and the one we chose),
+  `testing.md` (test suite), `bm25-explained.html`,
+  `hybrid-search-explained.html`
 
 Components used by exactly one route live in that route's folder; only shared
 ones live in `src/components/`.
@@ -240,6 +245,46 @@ means the sort decides what the model can see at all:
   not arrived is not waiting on a reply — the other three tools still see it.
 
 Rationale is in `src/lib/search/email-triage-tool.ts` and issue #15.
+
+### Memories, which are not search either
+
+A memory is something the assistant should know about the user, standing across
+every conversation. They are **injected, not retrieved**: `route.ts` calls
+`loadMemories()` and `renderMemoriesBlock` puts every one of them into the system
+prompt on every request. There is no tool that looks one up, and memories are
+deliberately not a `DocumentSource` — see
+`docs/adr/0001-memories-are-injected-not-retrieved.md`. The short version is that
+a retrieved memory only arrives on turns where the model thinks to go looking,
+and the memories that matter most are needed exactly on the turns that give it no
+reason to look.
+
+`saveMemory` and `updateMemory` are the app's only **mutating** tools, and three
+things follow from that:
+
+- **The model may save unprompted.** That is the behaviour worth having, and the
+  bounds live in the tool descriptions — most of which are prohibitions, because
+  a model given a memory tool will otherwise record the conversation it is in.
+- **There is no delete tool.** Update covers revision; deletion has no undo in a
+  JSON file and is one click away in the sidebar. The model may add and correct
+  what the assistant knows; only the user may erase it.
+- **A write is never silent.** Both tools take an `onWritten` callback, which the
+  route wires to the transient `refresh-sidebar` part, so the sidebar moves as
+  the memory lands. This is why `tools.ts` exports a factory: the callback is
+  per-request, since it closes over that request's stream writer.
+
+Memory ids are rendered into the prompt because `updateMemory` needs to name one.
+Two contradictory memories would both reach every future prompt, so the prompt
+tells the model to read the block and revise rather than save a second copy.
+
+Injection scales by prompt size and nothing else. `MEMORY_COUNT_WARNING_THRESHOLD`
+in `persistence-layer.ts` (100) warns once per process when that ceiling is
+approached; crossing it is the signal to revisit retrieval, not an error.
+
+Title generation runs on the **modal path only** — `createMemoryAction` takes an
+optional title and generates one with `gpt-5.4-nano` when it is absent. The tool
+path never pays for it, because the chat model writes the title in the same call.
+A failed generation falls back to the opening of the content rather than losing
+the memory.
 
 ### Component Architecture
 

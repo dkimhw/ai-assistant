@@ -1,8 +1,10 @@
+import { renderMemoriesBlock } from "@/lib/memory";
 import {
   appendToChatMessages,
   createChat,
   DB,
   getChat,
+  loadMemories,
   updateChatTitle,
 } from "@/lib/persistence-layer";
 import {
@@ -17,7 +19,7 @@ import {
 } from "ai";
 import { generateTitleForChat } from "./generate-title";
 import { getChatModel } from "./model";
-import { chatTools } from "./tools";
+import { chatTools, createChatTools } from "./tools";
 
 export type MyTools = InferUITools<typeof chatTools>;
 
@@ -84,6 +86,19 @@ const MAX_STEPS = 8;
  * is that missing shape, so the rule reduces to naming it and to insisting the
  * model judge what it gets back rather than read the list out.
  *
+ * The memories block sits above the tools rather than among the rules, because
+ * it is context and not instruction: it is what the assistant knows walking into
+ * the conversation, and the model should read it before it reads how to
+ * retrieve. Rendering it is `renderMemoriesBlock`'s job, including the decision
+ * to emit nothing at all when there are none.
+ *
+ * The memory *rules* are the ones to watch. Three of the four are prohibitions,
+ * which is the ratio a write tool needs: a model told it may remember things
+ * will remember the conversation it is in, and every one of those costs tokens
+ * on every later turn. The rule about reading the block before saving is what
+ * stops two contradictory memories accumulating, and it works only because the
+ * ids are in the prompt for `updateMemory` to name.
+ *
  * The tool-choice rules are the ones to expect to tune. Four tools over one
  * corpus mean the failure to design against is reaching for the wrong one, and
  * three specific wrong reaches are worth naming: `filterEmails`' `contains` used
@@ -96,10 +111,10 @@ const MAX_STEPS = 8;
  * cannot tell which mistake is being made and the prompt can say what to do
  * about it.
  */
-const SYSTEM_PROMPT = `<task-context>
+const buildSystemPrompt = (opts: { memories: DB.Memory[] }) => `<task-context>
 You are an email assistant that helps users find and understand information from their emails.
 </task-context>
-
+${renderMemoriesBlock({ memories: opts.memories })}
 <tools>
 You have four tools over the user's emails. Pick by what the question is asking for.
 
@@ -107,6 +122,11 @@ You have four tools over the user's emails. Pick by what the question is asking 
 - \`filterEmails\` — for facts ABOUT emails: who sent them, who they went to, when, how many, or an exact string they contain. Returns a true total count alongside the matches
 - \`triageEmails\` — for the STATE of conversations: which ones are waiting on a reply from the user, and how long they have been waiting. Takes no query. Pass \`awaiting: "them"\` for the mirror question, the threads the user is waiting on
 - \`getEmails\` — for reading emails you have already found, in full. Takes the ids from a search, filter, or triage result
+
+Two further tools are not about email. They change what you know about the user in every future conversation.
+
+- \`saveMemory\` — record a lasting fact about the user, so you still have it next time. Use it unprompted
+- \`updateMemory\` — revise a memory that is already in \`<memories>\`, naming it by its id
 </tools>
 
 <rules>
@@ -126,7 +146,12 @@ You have four tools over the user's emails. Pick by what the question is asking 
 - Pass \`expandThread: true\` to \`getEmails\` when an email reads as a reply, so you answer against the message it replies to rather than guessing at it. It is a parameter of that tool, not a tool of its own. Say when a message is part of a longer exchange
 - If an id you passed to \`getEmails\` comes back in \`missingIds\`, you invented it. Search again — do not guess another id
 - Only after looking should you formulate your answer based on what you found
-- Cite the emails you used: name the sender and subject of each one your answer draws on, and say when a claim comes from only one email. If nothing you found answers the question, say so plainly and say what you searched or filtered for — never fill the gap from memory
+- Anything in \`<memories>\` you already know — it needs no tool and no announcement. Just use it: write the way it says to write, and read a name or a role it defines as meaning what it says
+- Save a memory when the user tells you something that will still be true next month: how they want you to write or reply, who a person in their life is, what they are responsible for, a circumstance that persists. Do it as it comes up rather than waiting to be asked, and mention in one short clause that you have noted it
+- Do NOT save what an email already says — that is searchable and a copy of it goes stale. Do NOT save what is true only today, what you are inferring rather than being told, or a summary of the conversation you are having
+- Before saving, read \`<memories>\`. If what you are about to save revises one that is already there, call \`updateMemory\` with that memory's id instead — two memories that contradict each other both reach every future prompt
+- Memory ids are plumbing. Pass them to \`updateMemory\`; never print one to the user
+- Cite the emails you used: name the sender and subject of each one your answer draws on, and say when a claim comes from only one email. If nothing you found answers the question, say so plainly and say what you searched or filtered for — never fill the gap from your own knowledge
 </rules>
 
 <the-ask>
@@ -167,6 +192,10 @@ export async function POST(req: Request) {
     });
   }
 
+  // Every memory, on every request: they are injected rather than retrieved.
+  // See `@/lib/memory` and ADR 0001 for why there is no tool that looks one up.
+  const memories = await loadMemories();
+
   const stream = createUIMessageStream<MyMessage>({
     execute: async ({ writer }) => {
       let generateTitlePromise: Promise<void> | undefined = undefined;
@@ -202,9 +231,19 @@ export async function POST(req: Request) {
 
       const result = streamText({
         model: getChatModel(),
-        system: SYSTEM_PROMPT,
+        system: buildSystemPrompt({ memories }),
         messages: convertToModelMessages(messages),
-        tools: chatTools,
+        // Bound to this request so a memory write can reach this stream's
+        // writer. A memory the model saves silently is the failure mode of
+        // letting it save unprompted at all — the sidebar has to move.
+        tools: createChatTools({
+          onMemoryWritten: () =>
+            writer.write({
+              type: "data-frontend-action",
+              data: "refresh-sidebar",
+              transient: true,
+            }),
+        }),
         stopWhen: stepCountIs(MAX_STEPS),
         // Without this a turn the user abandoned keeps running to the step
         // ceiling: every remaining search still embeds, still reranks, still

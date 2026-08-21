@@ -110,6 +110,39 @@ const persistedGetPart = {
   },
 };
 
+/**
+ * A completed memory write. Unlike the four email parts above, replaying this
+ * one does not re-run anything — but it still has to validate, and a memory
+ * write is the tool call a user is most likely to scroll back to.
+ */
+const persistedSaveMemoryPart = {
+  type: "tool-saveMemory",
+  toolCallId: "call-5",
+  state: "output-available",
+  input: {
+    title: "Spelling preference",
+    content: "The user writes British English.",
+  },
+  output: {
+    id: "e0a1b2c3-0000-4000-8000-000000000000",
+    title: "Spelling preference",
+    content: "The user writes British English.",
+  },
+};
+
+/** And a completed revision, in its not-found shape. */
+const persistedUpdateMemoryPart = {
+  type: "tool-updateMemory",
+  toolCallId: "call-6",
+  state: "output-available",
+  input: {
+    id: "e0a1b2c3-0000-4000-8000-000000000000",
+    title: "Spelling preference",
+    content: "The user writes American English.",
+  },
+  output: { updated: false, id: "e0a1b2c3-0000-4000-8000-000000000000" },
+};
+
 const historyWith = (toolPart: unknown) => [
   {
     id: "m1",
@@ -187,6 +220,51 @@ describe("chat message validation", () => {
     });
 
     expect(result.success).toBe(true);
+  });
+
+  it("accepts a persisted memory save", async () => {
+    const result = await safeValidateUIMessages<MyMessage>({
+      messages: historyWith(persistedSaveMemoryPart),
+      tools: chatTools,
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts a persisted memory update", async () => {
+    const result = await safeValidateUIMessages<MyMessage>({
+      messages: historyWith(persistedUpdateMemoryPart),
+      tools: chatTools,
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("checks a memory save's input against its schema", async () => {
+    // An empty title is the interesting rejection: it is what a model produces
+    // when it decides the content speaks for itself, and it would land in the
+    // sidebar as a blank row.
+    const result = await safeValidateUIMessages<MyMessage>({
+      messages: historyWith({
+        ...persistedSaveMemoryPart,
+        input: { title: "", content: "The user writes British English." },
+      }),
+      tools: chatTools,
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it("checks a memory update's input against its schema", async () => {
+    const result = await safeValidateUIMessages<MyMessage>({
+      messages: historyWith({
+        ...persistedUpdateMemoryPart,
+        input: { title: "Spelling preference", content: "Anything" },
+      }),
+      tools: chatTools,
+    });
+
+    expect(result.success).toBe(false);
   });
 
   it("checks a filter's input against its schema", async () => {
