@@ -3,9 +3,9 @@
 A description of what the test suite currently is, what each test buys us, and
 which tests are load-bearing enough to be worth your review time.
 
-Status as of this document: **215 tests, 12 files, all passing, ~1.1s.**
-Almost every test lives in `src/lib/search/`; the one exception is described
-below and is a deliberate one.
+Status as of this document: **229 tests, 13 files, all passing, ~1.5s.**
+Almost every test lives in `src/lib/search/`; the two exceptions are described
+below and are deliberate ones.
 
 ```
 src/lib/search/tokenize.test.ts           8 tests
@@ -19,7 +19,8 @@ src/lib/search/email-search-tool.test.ts 21 tests
 src/lib/search/email-filter-tool.test.ts 33 tests
 src/lib/search/email-triage-tool.test.ts 22 tests
 src/lib/search/email-get-tool.test.ts    21 tests
-src/app/api/chat/tools.test.ts           10 tests
+src/app/api/chat/tools.test.ts           14 tests
+src/lib/memory.test.ts                    8 tests
 ```
 
 > The test-by-test breakdown in section 3 covers `tokenize`, `bm25`, `rrf`,
@@ -30,7 +31,30 @@ src/app/api/chat/tools.test.ts           10 tests
 > fetch tools (issue #10); both are summarised below. Reranking (issue #11) added
 > tests to `documents.test.ts` and `email-search-tool.test.ts`, summarised next.
 > Triage (issue #15) added `email-triage-tool.test.ts`, ten tests to
-> `emails.test.ts`, and three to `tools.test.ts`; summarised below.
+> `emails.test.ts`, and three to `tools.test.ts`; summarised below. Memories in
+> chat added `memory.test.ts` and four more to `tools.test.ts`; summarised
+> below.
+
+### Memories
+
+`memory.test.ts` is the second file outside `src/lib/search/`, and it is small
+on purpose. Memories are *injected*, not retrieved — every one of them is
+rendered into the system prompt on every request, with no ranking anywhere — so
+there is no relevance question to test and the prompt block is the entire
+delivery mechanism. Four tests cover it: that an empty set renders as nothing at
+all rather than as an empty section, that the id survives into the text (without
+it `updateMemory` has nothing to name), that the caller's newest-first order is
+preserved, and that each memory occupies its own line.
+
+The other four cover `titleFromContent`, which is the fallback a modal-created
+memory gets when title generation fails. It is tested and the generation is not,
+for the usual reason: the model call has no behaviour worth pinning, and its
+failure path does.
+
+The four additions to `tools.test.ts` are the same replay guarantee the email
+tools have — a persisted `saveMemory` or `updateMemory` part must still validate
+on the next request — plus the two input refusals: an empty title, and an update
+with no id.
 
 ### Triage
 
@@ -442,7 +466,7 @@ than knobs anyone intends to tune.
 | 7 | embedder failure still yields lexical results | 🔴 | The graceful-degradation guarantee, pinned at the seam users actually reach. `rrf.test.ts`'s "one empty ranking" test pins the same guarantee one level down. An embedding outage degrades the assistant's results; it does not break chat. |
 | 8–10 | schema accepts a query, rejects missing, rejects empty | 🟡 | A bad call is refused by the Zod schema rather than reaching the ranker. |
 
-### `src/app/api/chat/tools.test.ts` (7)
+### `src/app/api/chat/tools.test.ts` (7, now 14 — see Memories above)
 
 **The one test above the search layer, and a deliberate exception** rather than
 the thin end of a wedge toward route testing. It exists because the defect it

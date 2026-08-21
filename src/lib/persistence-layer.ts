@@ -159,6 +159,25 @@ export async function updateChatTitle(
 }
 
 /**
+ * The point at which the way memories are used stops being free.
+ *
+ * Every memory is rendered into the chat's system prompt on every request —
+ * there is no retrieval step (see `@/lib/memory` and ADR 0001). That is correct
+ * at twenty and wrong at five hundred, and it goes wrong *quietly*: as tokens
+ * on every turn, and as a model that stops reading the middle of a long list.
+ *
+ * Until the chat model gained `saveMemory`, growth was gated by a human typing
+ * into a modal. It is not any more, so the ceiling needs to announce itself.
+ *
+ * No cap is enforced. A round number well past normal use and well short of a
+ * real problem — crossing it is the signal to revisit retrieval, not an error.
+ */
+export const MEMORY_COUNT_WARNING_THRESHOLD = 100;
+
+/** So a threshold that has been crossed says so once, not on every request. */
+let warnedAboutMemoryCount = false;
+
+/**
  * Load all memories from the JSON file
  */
 export async function loadMemories(): Promise<DB.Memory[]> {
@@ -166,10 +185,22 @@ export async function loadMemories(): Promise<DB.Memory[]> {
     await ensureDataDirectory();
     const data = await fs.readFile(DATA_FILE_PATH, "utf-8");
     const parsed: DB.PersistenceData = JSON.parse(data);
-    return (parsed.memories || []).sort(
+    const memories = (parsed.memories || []).sort(
       (a, b) =>
         new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
     );
+
+    if (
+      memories.length > MEMORY_COUNT_WARNING_THRESHOLD &&
+      !warnedAboutMemoryCount
+    ) {
+      warnedAboutMemoryCount = true;
+      console.warn(
+        `[memory] ${memories.length} memories, past the ${MEMORY_COUNT_WARNING_THRESHOLD} they are injected wholesale at. Every one of them is in every chat request. Time to consider retrieval — see docs/memories-in-chat.md.`
+      );
+    }
+
+    return memories;
   } catch (error) {
     // If file doesn't exist or is invalid, return empty array
     return [];

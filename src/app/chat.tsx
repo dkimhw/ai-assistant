@@ -52,15 +52,22 @@ import type { MyMessage } from "./api/chat/route";
 import { useFocusWhenNoChatIdPresent } from "./use-focus-chat-when-new-chat-button-pressed";
 
 /**
- * What each email tool call is called in the transcript. Written from the user's
- * side of the glass — they are told what the assistant did to their email, not
- * which function it called.
+ * What each tool call is called in the transcript. Written from the user's side
+ * of the glass — they are told what the assistant did to their email, not which
+ * function it called.
+ *
+ * The two memory titles are phrased as things done to the user's data rather
+ * than as mechanics, for the same reason but with more riding on it: the model
+ * saves memories unprompted, and this row is where the user finds out. The
+ * sidebar refreshes at the same moment, so the two land together.
  */
 const TOOL_TITLES = {
   "tool-searchEmails": "Searched your email",
   "tool-filterEmails": "Filtered your email",
   "tool-triageEmails": "Reviewed what's waiting on you",
   "tool-getEmails": "Read your email in full",
+  "tool-saveMemory": "Saved this to memory",
+  "tool-updateMemory": "Updated what it remembers",
 } as const;
 
 export const Chat = (props: { chat: DB.Chat | null }) => {
@@ -209,6 +216,8 @@ export const Chat = (props: { chat: DB.Chat | null }) => {
                   case "tool-filterEmails":
                   case "tool-triageEmails":
                   case "tool-getEmails":
+                  case "tool-saveMemory":
+                  case "tool-updateMemory":
                     // Collapsed by default — the transcript stays readable for
                     // anyone who does not care about the mechanics, and the
                     // header's state badge distinguishes in-flight from done.
@@ -218,6 +227,11 @@ export const Chat = (props: { chat: DB.Chat | null }) => {
                     // arguments the assistant actually used, which is what tells
                     // them whether a wrong answer came from retrieval or from
                     // reasoning.
+                    //
+                    // The two memory tools join them rather than getting a
+                    // component of their own, and the same argument covers them
+                    // from the other end: what was written is exactly what the
+                    // user needs to see, and it is already the tool's input.
                     return (
                       <Tool key={`${message.id}-${i}`}>
                         <ToolHeader

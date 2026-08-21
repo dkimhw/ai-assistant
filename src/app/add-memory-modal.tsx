@@ -40,7 +40,9 @@ export function AddMemoryModal({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!title.trim() || !content.trim()) return;
+    // Only the content is required. An untitled memory gets one generated
+    // server-side, which is the whole point of not asking for it here.
+    if (!content.trim()) return;
 
     startTransition(async () => {
       await createMemoryAction({
@@ -68,14 +70,17 @@ export function AddMemoryModal({
           <div className="space-y-4 py-4">
             <div className="space-y-2">
               <label htmlFor="title" className="text-sm font-medium">
-                Title
+                Title{" "}
+                <span className="text-muted-foreground font-normal">
+                  (optional)
+                </span>
               </label>
               <Input
                 id="title"
                 ref={titleInputRef}
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="e.g., Language Preference"
+                placeholder="Leave blank to generate one"
                 disabled={isPending}
               />
             </div>
@@ -104,7 +109,7 @@ export function AddMemoryModal({
             </Button>
             <Button
               type="submit"
-              disabled={isPending || !title.trim() || !content.trim()}
+              disabled={isPending || !content.trim()}
             >
               {isPending ? "Adding..." : "Add Memory"}
             </Button>

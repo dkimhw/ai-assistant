@@ -71,13 +71,16 @@ export function ChatList({
             <SidebarMenuButton
               asChild
               isActive={chatIdFromSearchParams === chat.id}
-              className="truncate pr-8"
+              className="pr-9"
             >
-              <Link href={`/?chatId=${chat.id}`}>{chat.title}</Link>
+              <Link href={`/?chatId=${chat.id}`}>
+                <span className="truncate">{chat.title}</span>
+              </Link>
             </SidebarMenuButton>
             <SidebarMenuAction
               showOnHover
               onClick={() => setChatPendingDeletion(chat)}
+              className="text-destructive/70 hover:bg-destructive/10 hover:text-destructive peer-hover/menu-button:text-destructive/70"
             >
               <TrashIcon />
               <span className="sr-only">Delete chat</span>
