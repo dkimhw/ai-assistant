@@ -3,9 +3,9 @@
 A description of what the test suite currently is, what each test buys us, and
 which tests are load-bearing enough to be worth your review time.
 
-Status as of this document: **229 tests, 13 files, all passing, ~1.5s.**
-Almost every test lives in `src/lib/search/`; the two exceptions are described
-below and are deliberate ones.
+Status as of this document: **237 tests, 14 files, all passing, ~1.5s.**
+Most tests live in `src/lib/search/`; the three exceptions are described below
+and are deliberate ones.
 
 ```
 src/lib/search/tokenize.test.ts           8 tests
@@ -21,6 +21,7 @@ src/lib/search/email-triage-tool.test.ts 22 tests
 src/lib/search/email-get-tool.test.ts    21 tests
 src/app/api/chat/tools.test.ts           14 tests
 src/lib/memory.test.ts                    8 tests
+src/lib/chat-window.test.ts               8 tests
 ```
 
 > The test-by-test breakdown in section 3 covers `tokenize`, `bm25`, `rrf`,
@@ -33,7 +34,7 @@ src/lib/memory.test.ts                    8 tests
 > Triage (issue #15) added `email-triage-tool.test.ts`, ten tests to
 > `emails.test.ts`, and three to `tools.test.ts`; summarised below. Memories in
 > chat added `memory.test.ts` and four more to `tools.test.ts`; summarised
-> below.
+> below. The Window added `chat-window.test.ts`; summarised below.
 
 ### Memories
 
@@ -142,6 +143,29 @@ Two notes on what moved:
 `reranker.ts`'s OpenAI implementation has no test of its own, consistent with
 `createOpenAIEmbedder`: it is a thin provider adapter, and a test of it would be
 a test of the SDK.
+
+### The Window
+
+`chat-window.test.ts` is the third file outside `src/lib/search/`, and the first
+that tests something which is not retrieval at all. `windowMessages` decides
+which part of a chat the model is shown; the route calls it once and everything
+else in the app still sees the whole chat.
+
+Seven of the eight tests are edges — the cut landing where it should, a short
+conversation passing through untouched, a window of zero returning nothing rather
+than everything (`slice(-0)` is `slice(0)`, which is the whole array). They are
+cheap and they are the ones a rewrite would break.
+
+The eighth is the load-bearing one:
+
+- **"converts cleanly when the window opens on an assistant message mid-turn"** —
+  the whole approach rests on the assumption that cutting between messages cannot
+  separate a tool call from its result, because both live in the same assistant
+  `UIMessage` and are only split apart by `convertToModelMessages`. That is a
+  property of the SDK's message shape rather than of our code, and an orphaned
+  tool result is rejected by the provider rather than degraded — so it is
+  asserted against the real conversion instead of reasoned about. It is also the
+  seam Phase 2 will stub tool output through, and this test is what will notice.
 
 ### The filter and fetch tools
 

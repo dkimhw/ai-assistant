@@ -68,6 +68,7 @@ memory store, and a BM25F lexical search over an email corpus.
   `email-get-tool.ts` (the adapter shaped as four AI SDK tools), with tests
 - `src/lib/memory.ts` — the memories prompt block and modal-path title
   generation; `src/lib/memory-tools.ts` — the two memory write tools
+- `src/lib/chat-window.ts` — the Window: which part of a chat the model is shown
 - `src/lib/persistence-layer.ts` — JSON-file store for chats and memories
 - `src/components/ai-elements/` — AI chat UI primitives
 - `src/components/ui/` — shadcn/Radix primitives
@@ -121,6 +122,35 @@ exchange. A message with no content is the one thing not persisted — an abort
 before the first token would otherwise write an empty assistant turn that is
 replayed forever. Title generation for a new chat is kicked off early, kept as a
 promise, and awaited at the end of `execute` so it never blocks the first token.
+
+### The Window, and the Backlog
+
+A chat has no ceiling on its length and the prompt does, so the model is shown a
+**Window** — the most recent `WINDOW_MESSAGE_COUNT` messages, applied by
+`windowMessages` in `route.ts` between `safeValidateUIMessages` and
+`convertToModelMessages`. Everything older is the **Backlog**.
+
+The Window is a view for one model call, not a retention policy. Persistence, the
+sidebar and the transcript all still see the whole chat; `chat-window.ts` is the
+only place a chat is shortened, and it deletes nothing.
+
+Counted in messages rather than tokens: a message count is deterministic and can
+be reasoned about from the transcript, where a token budget varies turn to turn
+for reasons nobody can see. That honesty holds for prose and not for tool output
+— one assistant message in the store is 39 KB of search results — so bounding
+tool output is a second rule rather than a different unit.
+
+Cutting between messages is safe because a tool call and its result live in the
+*same* assistant `UIMessage` and are only split into an assistant/tool pair by
+`convertToModelMessages`. `chat-window.test.ts` asserts that against the real
+conversion rather than trusting it.
+
+The Backlog is currently just gone from the model's view: no manifest, no
+summary, so the assistant cannot tell a truncated conversation from a short one
+and will sometimes ask the user to repeat themselves. That is chosen — see
+`docs/adr/0002-the-backlog-is-dropped-not-summarised.md`. A `searchHistory` tool
+over a per-chat BM25 index makes it reachable again; see
+`plans/window-and-backlog.md` and ADR 0003.
 
 Four things bound one turn, and they are separate concerns: `stopWhen` caps the
 step count, `abortSignal` ends a turn the client walked away from, `prepareStep`
