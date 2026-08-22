@@ -1,4 +1,4 @@
-import { windowMessages } from "@/lib/chat-window";
+import { openingMessages, prepareWindow } from "@/lib/chat-window";
 import { renderMemoriesBlock } from "@/lib/memory";
 import {
   appendToChatMessages,
@@ -215,11 +215,12 @@ export async function POST(req: Request) {
           transient: true,
         });
 
-        // Windowed too. Normally this is one message, but a chat deleted from
-        // the sidebar while its tab is open arrives here with the whole
-        // client-side history — tool output included — and a title never needed
-        // more than the opening of a conversation anyway.
-        generateTitlePromise = generateTitleForChat(windowMessages({ messages }))
+        // The opening, not the Window — a title names what a conversation is
+        // about, which the first question sets and later drift does not. Nearly
+        // always a no-op, since a chat being titled is one message long; it
+        // matters when a chat deleted from the sidebar with its tab still open
+        // replays the client's whole history into `createChat`.
+        generateTitlePromise = generateTitleForChat(openingMessages({ messages }))
           .then((title) => {
             return updateChatTitle(chatId, title);
           })
@@ -242,7 +243,7 @@ export async function POST(req: Request) {
         // one model call. Applied after validation so persisted tool parts are
         // still checked against their schemas, and after the append above so
         // what is written down is never what was sent.
-        messages: convertToModelMessages(windowMessages({ messages })),
+        messages: convertToModelMessages(prepareWindow({ messages })),
         // Bound to this request so a memory write can reach this stream's
         // writer. A memory the model saves silently is the failure mode of
         // letting it save unprompted at all — the sidebar has to move.

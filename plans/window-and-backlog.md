@@ -89,13 +89,13 @@ recoverable by calling the tool again.
 
 ### Acceptance criteria
 
-- [ ] The most recent assistant message keeps its tool output in full
-- [ ] Every older tool part in the Window is stubbed
-- [ ] A message list containing stubbed tool parts converts to model messages
+- [x] The most recent assistant message keeps its tool output in full
+- [x] Every older tool part in the Window is stubbed
+- [x] A message list containing stubbed tool parts converts to model messages
       with correctly paired tool calls and results — covered by a test, for every
       tool in the set
-- [ ] A turn's own tool results are unaffected during that turn
-- [ ] Measured: a chat whose history contains a large multi-search turn sends
+- [x] A turn's own tool results are unaffected during that turn
+- [x] Measured: a chat whose history contains a large multi-search turn sends
       materially fewer tokens than before
 
 ---

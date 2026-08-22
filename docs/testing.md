@@ -3,7 +3,7 @@
 A description of what the test suite currently is, what each test buys us, and
 which tests are load-bearing enough to be worth your review time.
 
-Status as of this document: **237 tests, 14 files, all passing, ~1.5s.**
+Status as of this document: **250 tests, 14 files, all passing, ~1.8s.**
 Most tests live in `src/lib/search/`; the three exceptions are described below
 and are deliberate ones.
 
@@ -21,7 +21,7 @@ src/lib/search/email-triage-tool.test.ts 22 tests
 src/lib/search/email-get-tool.test.ts    21 tests
 src/app/api/chat/tools.test.ts           14 tests
 src/lib/memory.test.ts                    8 tests
-src/lib/chat-window.test.ts               8 tests
+src/lib/chat-window.test.ts              21 tests
 ```
 
 > The test-by-test breakdown in section 3 covers `tokenize`, `bm25`, `rrf`,
@@ -147,9 +147,9 @@ a test of the SDK.
 ### The Window
 
 `chat-window.test.ts` is the third file outside `src/lib/search/`, and the first
-that tests something which is not retrieval at all. `windowMessages` decides
-which part of a chat the model is shown; the route calls it once and everything
-else in the app still sees the whole chat.
+that tests something which is not retrieval at all. It decides what the model is
+shown: `prepareWindow` for the chat model, `openingMessages` for title
+generation. Everything else in the app still sees the whole chat.
 
 Seven of the eight tests are edges — the cut landing where it should, a short
 conversation passing through untouched, a window of zero returning nothing rather
@@ -165,7 +165,32 @@ The eighth is the load-bearing one:
   property of the SDK's message shape rather than of our code, and an orphaned
   tool result is rejected by the provider rather than degraded — so it is
   asserted against the real conversion instead of reasoned about. It is also the
-  seam Phase 2 will stub tool output through, and this test is what will notice.
+  seam Phase 2 stubs tool output through, and this test is what notices.
+
+Eight more arrived with the stubbing rule, and two of those carry the weight:
+
+- **"converts cleanly for every tool in the set"** — a stubbed tool part still
+  has to produce a paired assistant tool-call and tool-result. It is driven off
+  `Object.keys(chatTools)` rather than a list written in the test, so a seventh
+  tool is covered on the day it is added rather than the day someone remembers
+  this file.
+- **"materially shrinks a turn that ran several searches"** — the only test in
+  the suite that asserts on *size*. It is the whole point of the rule, and
+  without it every other stubbing test would still pass against a stub that
+  faithfully copied the output it was meant to drop.
+
+The rest pin the choices that are easy to undo by accident: the most recent
+assistant message keeps its output, scalars survive the outline while arrays
+become their length, and a conversation with no tool calls comes back untouched.
+
+Two more came out of review. **"drops a tool call that never got its result"** is
+the one to keep: a turn aborted mid-tool persists a part in `input-available`
+state, which converts to an assistant `tool_calls` with nothing answering it and
+is rejected by the provider — one abort bricking one chat, on every subsequent
+request. **"takes the start of a conversation, not the end"** pins title
+generation to the opposite end of the chat from the Window, which is easy to
+"tidy up" into reusing `prepareWindow` and thereby title a chat after whatever it
+drifted onto.
 
 ### The filter and fetch tools
 

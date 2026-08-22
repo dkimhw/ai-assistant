@@ -68,7 +68,8 @@ memory store, and a BM25F lexical search over an email corpus.
   `email-get-tool.ts` (the adapter shaped as four AI SDK tools), with tests
 - `src/lib/memory.ts` — the memories prompt block and modal-path title
   generation; `src/lib/memory-tools.ts` — the two memory write tools
-- `src/lib/chat-window.ts` — the Window: which part of a chat the model is shown
+- `src/lib/chat-window.ts` — the Window: which part of a chat the model is
+  shown, and how much of its tool output survives
 - `src/lib/persistence-layer.ts` — JSON-file store for chats and memories
 - `src/components/ai-elements/` — AI chat UI primitives
 - `src/components/ui/` — shadcn/Radix primitives
@@ -126,19 +127,41 @@ promise, and awaited at the end of `execute` so it never blocks the first token.
 ### The Window, and the Backlog
 
 A chat has no ceiling on its length and the prompt does, so the model is shown a
-**Window** — the most recent `WINDOW_MESSAGE_COUNT` messages, applied by
-`windowMessages` in `route.ts` between `safeValidateUIMessages` and
+**Window** — the most recent `WINDOW_MESSAGE_COUNT` messages, built by
+`prepareWindow` in `route.ts` between `safeValidateUIMessages` and
 `convertToModelMessages`. Everything older is the **Backlog**.
 
 The Window is a view for one model call, not a retention policy. Persistence, the
 sidebar and the transcript all still see the whole chat; `chat-window.ts` is the
 only place a chat is shortened, and it deletes nothing.
 
-Counted in messages rather than tokens: a message count is deterministic and can
-be reasoned about from the transcript, where a token budget varies turn to turn
-for reasons nobody can see. That honesty holds for prose and not for tool output
-— one assistant message in the store is 39 KB of search results — so bounding
-tool output is a second rule rather than a different unit.
+It is two rules, not one. **Prose**: the most recent `WINDOW_MESSAGE_COUNT`
+messages. A message count is deterministic and can be reasoned about from the
+transcript, where a token budget varies turn to turn for reasons nobody can see.
+**Tool output**: kept only on the most recent assistant message, replaced
+everywhere earlier by a note and an outline (scalars survive, arrays become their
+length). The count is an honest unit for prose and a useless one for tool output,
+where a single assistant message can carry a whole step ceiling's worth of search
+results — the store has one at 38 KB, three hundred times a typical user turn.
+
+Keeping the most recent one is what makes "what was the third result?" work for a
+turn; beyond that, tool output in history buys little, because during a turn the
+model's results arrive from the live loop rather than from the transcript. The
+stub stays in `output-available` state on purpose: `input-available` makes
+`convertToModelMessages` emit the call with no result, which a provider rejects,
+and `output-error` tells the model the call failed.
+
+`prepareWindow` drops half-finished tool calls for that same reason. A turn
+aborted between the model asking for a tool and the tool answering persists a
+part in `input-available` state, which is replayed on every later request as an
+assistant `tool_calls` with nothing answering it — one abort would otherwise
+brick the chat it happened in.
+
+Title generation takes the **opening** rather than the Window (`openingMessages`,
+`TITLE_MESSAGE_COUNT`), because a title names what a conversation is about and
+that is set by the question that started it. Nearly always a no-op — a chat being
+titled is one message long — it matters when a chat deleted from the sidebar with
+its tab still open replays the client's whole history into `createChat`.
 
 Cutting between messages is safe because a tool call and its result live in the
 *same* assistant `UIMessage` and are only split into an assistant/tool pair by
