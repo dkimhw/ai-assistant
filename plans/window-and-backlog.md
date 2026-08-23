@@ -121,19 +121,25 @@ all.
 
 ### Acceptance criteria
 
-- [ ] An index is built over the chat's `text` parts only; tool output is never
+- [x] An index is built over the chat's `text` parts only; tool output is never
       indexed
-- [ ] The index is built from the in-memory message list, cached per chat, and
+- [x] The index is built from the in-memory message list, cached per chat, and
       rebuilt when the message count changes
-- [ ] `documents.ts` and the source registry are untouched
-- [ ] The tool returns matched messages for a query naming words the user
+- [x] `documents.ts` and the source registry are untouched
+- [x] The tool returns matched messages for a query naming words the user
       actually used earlier in the chat
-- [ ] The system prompt distinguishes `searchHistory` from `searchEmails`, and
+- [x] The system prompt distinguishes `searchHistory` from `searchEmails`, and
       names the wrong reach
-- [ ] `tool-searchHistory` renders as a collapsible block consistent with the
+- [x] `tool-searchHistory` renders as a collapsible block consistent with the
       other tool parts
-- [ ] End-to-end: a fact stated before the Window and asked about after it is
+- [x] End-to-end: a fact stated before the Window and asked about after it is
       answered correctly when the user signals that it was discussed
+
+Observed against the real model: a 31-message chat whose first message named a
+school and a teacher, followed by "we talked about my daughter's school earlier
+— what was it called?". The model called `searchHistory` with
+`{"query": "daughter's school teacher"}` and answered with both names, neither
+of which was inside the Window.
 
 ---
 

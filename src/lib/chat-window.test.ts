@@ -277,8 +277,8 @@ describe("stubOldToolOutput", () => {
 
 describe("stubOldToolOutput — the stub is safe to send", () => {
   /**
-   * Driven off the real tool set rather than a list written here, so a seventh
-   * tool is covered on the day it is added rather than the day someone
+   * Driven off the real tool set rather than a list written here, so a newly
+   * added tool is covered on the day it is added rather than the day someone
    * remembers this file.
    */
   it("converts cleanly for every tool in the set", () => {

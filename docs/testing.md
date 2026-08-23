@@ -3,7 +3,7 @@
 A description of what the test suite currently is, what each test buys us, and
 which tests are load-bearing enough to be worth your review time.
 
-Status as of this document: **250 tests, 14 files, all passing, ~1.8s.**
+Status as of this document: **271 tests, 16 files, all passing, ~1.3s.**
 Most tests live in `src/lib/search/`; the three exceptions are described below
 and are deliberate ones.
 
@@ -22,6 +22,8 @@ src/lib/search/email-get-tool.test.ts    21 tests
 src/app/api/chat/tools.test.ts           14 tests
 src/lib/memory.test.ts                    8 tests
 src/lib/chat-window.test.ts              21 tests
+src/lib/search/chat-history.test.ts      13 tests
+src/lib/search/chat-history-tool.test.ts  6 tests
 ```
 
 > The test-by-test breakdown in section 3 covers `tokenize`, `bm25`, `rrf`,
@@ -35,6 +37,8 @@ src/lib/chat-window.test.ts              21 tests
 > `emails.test.ts`, and three to `tools.test.ts`; summarised below. Memories in
 > chat added `memory.test.ts` and four more to `tools.test.ts`; summarised
 > below. The Window added `chat-window.test.ts`; summarised below.
+> `searchHistory` added `chat-history.test.ts`, `chat-history-tool.test.ts` and
+> two more to `tools.test.ts`; summarised below.
 
 ### Memories
 
@@ -191,6 +195,45 @@ request. **"takes the start of a conversation, not the end"** pins title
 generation to the opposite end of the chat from the Window, which is easy to
 "tidy up" into reusing `prepareWindow` and thereby title a chat after whatever it
 drifted onto.
+
+### Searching the Backlog
+
+`chat-history.test.ts` and `chat-history-tool.test.ts` cover the seventh tool,
+and they are the only tests in the suite whose corpus is a conversation. Both
+build that corpus inline — a handful of messages with the searched-for word in
+exactly one of them — and every test uses its own chat id, because the index is
+cached per chat for the process lifetime and a shared id would leak one test's
+corpus into the next.
+
+Three carry the weight:
+
+- **"indexes text parts only, never tool output"** — the rule ADR 0003 exists to
+  state. It is asserted from both sides: a word appearing only inside a tool call
+  and its output is unfindable, while the prose of that same message is found, so
+  the test cannot pass by failing to index the message at all.
+- **"skips messages with no prose rather than indexing them empty"** — an empty
+  document is not a no-op, it drags `avgFieldLength` down and rescores every real
+  message. The kind of thing that is silently wrong, which is what this suite is
+  for.
+- **"reaches a message the Window has already dropped"** (in the tool file) — the
+  point of the whole slice in one assertion: a fact stated in the first message
+  of a long chat is absent from `prepareWindow`'s output and still found by the
+  tool. If the route ever starts handing the tool a windowed list, the Backlog
+  quietly becomes unreachable again and nothing else notices.
+
+Three more came out of review, and each pins a way the tool could return
+something worse than nothing: **"never returns the message the search was made
+from"** (the model writes its query out of the user's current turn, so that turn
+outranks the message being looked for and spends a slot handing the question
+back), **"shows the part of a long message that matched, not its opening"** (a
+hit whose text does not contain the word it was returned for reads as a failed
+search), and **"rebuilds when the chat is the same length but not the same
+conversation"** (a chat id does not identify a client, so a count-keyed cache
+serves one tab's conversation to another).
+
+The rest are ordinary: ranking the message that uses the terms most above one
+that mentions them once, a truncated paste, the cap surviving the exclusion of
+the current turn, and the empty result for a query whose words nobody typed.
 
 ### The filter and fetch tools
 

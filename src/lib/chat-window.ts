@@ -19,8 +19,10 @@ import { isToolUIPart, type UIMessage } from "ai";
  * of it, so the assistant cannot tell a truncated conversation from a short one
  * and will sometimes ask the user to repeat something they already said. That is
  * a chosen trade rather than an oversight — see
- * `docs/adr/0002-the-backlog-is-dropped-not-summarised.md`. The search tool that
- * makes the Backlog reachable again arrives in a later phase.
+ * `docs/adr/0002-the-backlog-is-dropped-not-summarised.md`. What the model has
+ * instead is `searchHistory` (`@/lib/search/chat-history-tool`), which reaches
+ * the Backlog on the user's signal; it is given the whole message list rather
+ * than this module's output, for the obvious reason.
  */
 
 /**
