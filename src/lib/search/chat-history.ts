@@ -143,6 +143,13 @@ type IndexedMessages = {
  *
  * Ellipses mark both ends, the same mark `searchEmails` uses and with the same
  * meaning — there is more of this message than you are looking at.
+ *
+ * KNOWN BUG, not fixed: this anchors on the *earliest* matched term rather than
+ * the most informative one, so a long paste whose common word appears at the top
+ * and whose answer appears at the bottom still returns a passage without the
+ * answer in it — the very failure described above, moved rather than closed. See
+ * `docs/future-feat/history-snippets-anchor-on-the-wrong-term.md`, which carries
+ * a reproduction and the two candidate fixes.
  */
 const snippet = (opts: { text: string; terms: string[] }): string => {
   const { text } = opts;
