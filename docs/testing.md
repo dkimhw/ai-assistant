@@ -3,9 +3,9 @@
 A description of what the test suite currently is, what each test buys us, and
 which tests are load-bearing enough to be worth your review time.
 
-Status as of this document: **229 tests, 13 files, all passing, ~1.5s.**
-Almost every test lives in `src/lib/search/`; the two exceptions are described
-below and are deliberate ones.
+Status as of this document: **280 tests, 16 files, all passing, ~1.3s.**
+Most tests live in `src/lib/search/`; the three exceptions are described below
+and are deliberate ones.
 
 ```
 src/lib/search/tokenize.test.ts           8 tests
@@ -21,6 +21,9 @@ src/lib/search/email-triage-tool.test.ts 22 tests
 src/lib/search/email-get-tool.test.ts    21 tests
 src/app/api/chat/tools.test.ts           14 tests
 src/lib/memory.test.ts                    8 tests
+src/lib/chat-window.test.ts              21 tests
+src/lib/search/chat-history.test.ts      22 tests
+src/lib/search/chat-history-tool.test.ts  6 tests
 ```
 
 > The test-by-test breakdown in section 3 covers `tokenize`, `bm25`, `rrf`,
@@ -33,7 +36,9 @@ src/lib/memory.test.ts                    8 tests
 > Triage (issue #15) added `email-triage-tool.test.ts`, ten tests to
 > `emails.test.ts`, and three to `tools.test.ts`; summarised below. Memories in
 > chat added `memory.test.ts` and four more to `tools.test.ts`; summarised
-> below.
+> below. The Window added `chat-window.test.ts`; summarised below.
+> `searchHistory` added `chat-history.test.ts`, `chat-history-tool.test.ts` and
+> two more to `tools.test.ts`; summarised below.
 
 ### Memories
 
@@ -142,6 +147,103 @@ Two notes on what moved:
 `reranker.ts`'s OpenAI implementation has no test of its own, consistent with
 `createOpenAIEmbedder`: it is a thin provider adapter, and a test of it would be
 a test of the SDK.
+
+### The Window
+
+`chat-window.test.ts` is the third file outside `src/lib/search/`, and the first
+that tests something which is not retrieval at all. It decides what the model is
+shown: `prepareWindow` for the chat model, `openingMessages` for title
+generation. Everything else in the app still sees the whole chat.
+
+Seven of the eight tests are edges — the cut landing where it should, a short
+conversation passing through untouched, a window of zero returning nothing rather
+than everything (`slice(-0)` is `slice(0)`, which is the whole array). They are
+cheap and they are the ones a rewrite would break.
+
+The eighth is the load-bearing one:
+
+- **"converts cleanly when the window opens on an assistant message mid-turn"** —
+  the whole approach rests on the assumption that cutting between messages cannot
+  separate a tool call from its result, because both live in the same assistant
+  `UIMessage` and are only split apart by `convertToModelMessages`. That is a
+  property of the SDK's message shape rather than of our code, and an orphaned
+  tool result is rejected by the provider rather than degraded — so it is
+  asserted against the real conversion instead of reasoned about. It is also the
+  seam Phase 2 stubs tool output through, and this test is what notices.
+
+Eight more arrived with the stubbing rule, and two of those carry the weight:
+
+- **"converts cleanly for every tool in the set"** — a stubbed tool part still
+  has to produce a paired assistant tool-call and tool-result. It is driven off
+  `Object.keys(chatTools)` rather than a list written in the test, so a seventh
+  tool is covered on the day it is added rather than the day someone remembers
+  this file.
+- **"materially shrinks a turn that ran several searches"** — the only test in
+  the suite that asserts on *size*. It is the whole point of the rule, and
+  without it every other stubbing test would still pass against a stub that
+  faithfully copied the output it was meant to drop.
+
+The rest pin the choices that are easy to undo by accident: the most recent
+assistant message keeps its output, scalars survive the outline while arrays
+become their length, and a conversation with no tool calls comes back untouched.
+
+Two more came out of review. **"drops a tool call that never got its result"** is
+the one to keep: a turn aborted mid-tool persists a part in `input-available`
+state, which converts to an assistant `tool_calls` with nothing answering it and
+is rejected by the provider — one abort bricking one chat, on every subsequent
+request. **"takes the start of a conversation, not the end"** pins title
+generation to the opposite end of the chat from the Window, which is easy to
+"tidy up" into reusing `prepareWindow` and thereby title a chat after whatever it
+drifted onto.
+
+### Searching the Backlog
+
+`chat-history.test.ts` and `chat-history-tool.test.ts` cover the seventh tool,
+and they are the only tests in the suite whose corpus is a conversation. Both
+build that corpus inline — a handful of messages with the searched-for word in
+exactly one of them — and every test uses its own chat id, because the index is
+cached per chat for the process lifetime and a shared id would leak one test's
+corpus into the next.
+
+Three carry the weight:
+
+- **"indexes text parts only, never tool output"** — the rule ADR 0003 exists to
+  state. It is asserted from both sides: a word appearing only inside a tool call
+  and its output is unfindable, while the prose of that same message is found, so
+  the test cannot pass by failing to index the message at all.
+- **"skips messages with no prose rather than indexing them empty"** — an empty
+  document is not a no-op, it drags `avgFieldLength` down and rescores every real
+  message. The kind of thing that is silently wrong, which is what this suite is
+  for.
+- **"reaches a message the Window has already dropped"** (in the tool file) — the
+  point of the whole slice in one assertion: a fact stated in the first message
+  of a long chat is absent from `prepareWindow`'s output and still found by the
+  tool. If the route ever starts handing the tool a windowed list, the Backlog
+  quietly becomes unreachable again and nothing else notices.
+
+Three more came out of review, and each pins a way the tool could return
+something worse than nothing: **"never returns the message the search was made
+from"** (the model writes its query out of the user's current turn, so that turn
+outranks the message being looked for and spends a slot handing the question
+back), **"shows the part of a long message that matched, not its opening"** (a
+hit whose text does not contain the word it was returned for reads as a failed
+search), and **"rebuilds when the chat is the same length but not the same
+conversation"** (a chat id does not identify a client, so a count-keyed cache
+serves one tab's conversation to another).
+
+The rest are ordinary: ranking the message that uses the terms most above one
+that mentions them once, a truncated paste, the cap surviving the exclusion of
+the current turn, and the empty result for a query whose words nobody typed.
+
+A second `describe` covers the shape of a hit rather than which message won it.
+Most of those are the edges neighbour expansion has to survive — the first
+message of a chat, an adjacent tool-only message with no prose, the user's
+current turn sitting next to a hit — and they are cheap. The one worth reading is
+**"spends the cap on the Backlog before the Window"**: two messages match, only
+one is news, and with a cap of one it has to be that one. It is the test that
+would notice if the in-Window sort were ever "simplified" back into plain
+relevance order, which would silently return the model things it can already
+see.
 
 ### The filter and fetch tools
 

@@ -66,6 +66,7 @@ const TOOL_TITLES = {
   "tool-filterEmails": "Filtered your email",
   "tool-triageEmails": "Reviewed what's waiting on you",
   "tool-getEmails": "Read your email in full",
+  "tool-searchHistory": "Looked back through this chat",
   "tool-saveMemory": "Saved this to memory",
   "tool-updateMemory": "Updated what it remembers",
 } as const;
@@ -216,11 +217,17 @@ export const Chat = (props: { chat: DB.Chat | null }) => {
                   case "tool-filterEmails":
                   case "tool-triageEmails":
                   case "tool-getEmails":
+                  case "tool-searchHistory":
                   case "tool-saveMemory":
                   case "tool-updateMemory":
                     // Collapsed by default — the transcript stays readable for
                     // anyone who does not care about the mechanics, and the
                     // header's state badge distinguishes in-flight from done.
+                    //
+                    // `searchHistory` joins them unchanged: it is the one tool
+                    // whose result the user has already seen once, further up
+                    // the same transcript, so the block's job is only to say
+                    // that the assistant went looking and with what words.
                     //
                     // All four email tools render the same way and differ only
                     // in their title: what the user needs from the block is the

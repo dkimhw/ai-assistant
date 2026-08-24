@@ -111,6 +111,29 @@ const persistedGetPart = {
 };
 
 /**
+ * A completed history search. Its output is a slice of the chat itself, so
+ * replaying it puts the same prose in the transcript twice — validation still
+ * has to accept it, and the shape is not the one any email tool returns.
+ */
+const persistedSearchHistoryPart = {
+  type: "tool-searchHistory",
+  toolCallId: "call-7",
+  state: "output-available",
+  input: { query: "school run" },
+  output: [
+    {
+      messageId: "m0",
+      turn: 1,
+      ofTurns: 42,
+      role: "user",
+      text: "the school run starts at half eight on Tuesdays",
+      inWindow: false,
+      after: { role: "assistant", text: "noted" },
+    },
+  ],
+};
+
+/**
  * A completed memory write. Unlike the four email parts above, replaying this
  * one does not re-run anything — but it still has to validate, and a memory
  * write is the tool call a user is most likely to scroll back to.
@@ -238,6 +261,27 @@ describe("chat message validation", () => {
     });
 
     expect(result.success).toBe(true);
+  });
+
+  it("accepts a persisted history search", async () => {
+    const result = await safeValidateUIMessages<MyMessage>({
+      messages: historyWith(persistedSearchHistoryPart),
+      tools: chatTools,
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("checks a history search's input against its schema", async () => {
+    const result = await safeValidateUIMessages<MyMessage>({
+      messages: historyWith({
+        ...persistedSearchHistoryPart,
+        input: { query: "" },
+      }),
+      tools: chatTools,
+    });
+
+    expect(result.success).toBe(false);
   });
 
   it("checks a memory save's input against its schema", async () => {

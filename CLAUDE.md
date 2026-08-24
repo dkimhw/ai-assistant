@@ -35,9 +35,10 @@ memory store, and a BM25F lexical search over an email corpus.
   `src/app/api/chat/model.ts`.
   `@ai-sdk/google` and `@ai-sdk/anthropic` are installed but not wired up.
 - **Streaming**: `streamText` composed into a custom `createUIMessageStream`
-- **Tools**: six — four over the email corpus (relevance search, exact-criteria
-  filter, thread-state triage, full-text fetch) plus two that write memories
-  (`saveMemory`, `updateMemory`) — given to the chat loop with a step limit
+- **Tools**: seven — four over the email corpus (relevance search, exact-criteria
+  filter, thread-state triage, full-text fetch), one over the chat's own Backlog
+  (`searchHistory`), plus two that write memories (`saveMemory`, `updateMemory`)
+  — given to the chat loop with a step limit
 - **Persistence**: a single JSON file, `data/db.local.json` (no database)
 - **Search**: hand-rolled BM25F over `data/emails.json`, fused with a semantic
   ranking by RRF, then reranked by an LLM for the chat tool only; no search
@@ -65,9 +66,13 @@ memory store, and a BM25F lexical search over an email corpus.
   triage tools), `emails.ts` (the email source adapter, which also owns
   `INBOX_OWNER`, `isAutomatedSender` and `getThreadStates`), and
   `email-search-tool.ts`, `email-filter-tool.ts`, `email-triage-tool.ts` and
-  `email-get-tool.ts` (the adapter shaped as four AI SDK tools), with tests
+  `email-get-tool.ts` (the adapter shaped as four AI SDK tools), plus
+  `chat-history.ts` and `chat-history-tool.ts` (BM25 over one chat's own
+  messages, which is not part of the document layer at all), with tests
 - `src/lib/memory.ts` — the memories prompt block and modal-path title
   generation; `src/lib/memory-tools.ts` — the two memory write tools
+- `src/lib/chat-window.ts` — the Window: which part of a chat the model is
+  shown, and how much of its tool output survives
 - `src/lib/persistence-layer.ts` — JSON-file store for chats and memories
 - `src/components/ai-elements/` — AI chat UI primitives
 - `src/components/ui/` — shadcn/Radix primitives
@@ -122,6 +127,104 @@ before the first token would otherwise write an empty assistant turn that is
 replayed forever. Title generation for a new chat is kicked off early, kept as a
 promise, and awaited at the end of `execute` so it never blocks the first token.
 
+### The Window, and the Backlog
+
+A chat has no ceiling on its length and the prompt does, so the model is shown a
+**Window** — the most recent `WINDOW_MESSAGE_COUNT` messages, built by
+`prepareWindow` in `route.ts` between `safeValidateUIMessages` and
+`convertToModelMessages`. Everything older is the **Backlog**.
+
+The Window is a view for one model call, not a retention policy. Persistence, the
+sidebar and the transcript all still see the whole chat; `chat-window.ts` is the
+only place a chat is shortened, and it deletes nothing.
+
+It is two rules, not one. **Prose**: the most recent `WINDOW_MESSAGE_COUNT`
+messages. A message count is deterministic and can be reasoned about from the
+transcript, where a token budget varies turn to turn for reasons nobody can see.
+**Tool output**: kept only on the most recent assistant message, replaced
+everywhere earlier by a note and an outline (scalars survive, arrays become their
+length). The count is an honest unit for prose and a useless one for tool output,
+where a single assistant message can carry a whole step ceiling's worth of search
+results — the store has one at 38 KB, three hundred times a typical user turn.
+
+Keeping the most recent one is what makes "what was the third result?" work for a
+turn; beyond that, tool output in history buys little, because during a turn the
+model's results arrive from the live loop rather than from the transcript. The
+stub stays in `output-available` state on purpose: `input-available` makes
+`convertToModelMessages` emit the call with no result, which a provider rejects,
+and `output-error` tells the model the call failed.
+
+`prepareWindow` drops half-finished tool calls for that same reason. A turn
+aborted between the model asking for a tool and the tool answering persists a
+part in `input-available` state, which is replayed on every later request as an
+assistant `tool_calls` with nothing answering it — one abort would otherwise
+brick the chat it happened in.
+
+Title generation takes the **opening** rather than the Window (`openingMessages`,
+`TITLE_MESSAGE_COUNT`), because a title names what a conversation is about and
+that is set by the question that started it. Nearly always a no-op — a chat being
+titled is one message long — it matters when a chat deleted from the sidebar with
+its tab still open replays the client's whole history into `createChat`.
+
+Cutting between messages is safe because a tool call and its result live in the
+*same* assistant `UIMessage` and are only split into an assistant/tool pair by
+`convertToModelMessages`. `chat-window.test.ts` asserts that against the real
+conversion rather than trusting it.
+
+The Backlog has no manifest and no summary in the prompt — the assistant cannot
+tell a truncated conversation from a short one, which is chosen (see
+`docs/adr/0002-the-backlog-is-dropped-not-summarised.md`). What it has instead is
+`searchHistory`, so the Backlog is reachable on the user's signal rather than on
+the model's suspicion. Because nothing in the request reveals that a Window was
+applied, the system prompt is the only place the model can learn that there is
+more conversation and that it is searchable; that sentence is load-bearing.
+
+`chat-history.ts` builds a BM25 index over one chat's `text` parts — one document
+per message, one field, no chunking, no vectors, no fusion — directly on `bm25.ts`
+and `tokenize.ts`. It is deliberately **not** a `DocumentSource` and never touches
+`documents.ts`; see ADR 0003. Indexing tool output would put one 39 KB document
+beside dozens of 100-byte ones and wreck the length normalisation, so only prose
+is indexed, and a message with no prose is skipped rather than indexed empty.
+The index is in-memory, keyed by chat id and invalidated on the chat's message
+ids — the count alone would collide between two tabs on one chat, or on a resend
+after an aborted turn. It is LRU-bounded so a long-lived process does not hold
+every chat ever opened, and it is honestly an *intra-turn* cache: a turn appends
+two messages, so the next request rebuilds regardless.
+
+A hit is the region of the message around the term that matched, not its
+opening — a pasted document is a `text` part like any other, and a hit whose text
+does not contain the word it was returned for reads as a failed search. The
+message the search was made from is never a hit: the model writes the query out
+of it, so it ranks near the top and would spend a slot handing the question
+back.
+
+`searchHistory` is the one tool whose corpus is the request rather than a file, so
+`createChatTools` takes the chat and `route.ts` passes it the **whole validated
+message list** — not `prepareWindow`'s output, which would leave the tool able to
+search only what the model can already see. The unbound set built for validation
+passes no chat, and that copy answers every query with an empty array.
+
+A hit is not a bare message. It carries `before` and `after` — the messages
+either side of it, because a hit on "yes, do that" is worthless alone — plus
+`turn N of M` for how early it was said, and `inWindow`. Neighbours are absent
+at the ends of a chat, absent when the adjacent message is a tool call with no
+prose, and absent when it is the user's current turn; they are cut to a fifth of
+the hit's own budget, since a neighbour exists to identify a question rather
+than answer one.
+
+In-Window hits are marked *and* sorted behind the rest, not dropped. Marking
+stops the model presenting something the user can see as a discovery; the sort
+stops it spending the cap on messages already in context. Dropping was rejected
+because an empty result is a sentence the prompt acts on, and "the conversation
+does not contain that" is a lie when the answer is two messages up.
+
+Three prompt rules carry the rest, and they were all written against observed
+failures: restate the *substance* of what you recovered rather than the one word
+asked for (the model otherwise re-searches for the fact next to the answer);
+never offer to search when you can search; and look at what is already in front
+of you first. A tool result is not indexed and is stubbed on the next turn, so a
+recovered fact only survives in the assistant's own prose.
+
 Four things bound one turn, and they are separate concerns: `stopWhen` caps the
 step count, `abortSignal` ends a turn the client walked away from, `prepareStep`
 withdraws the tools for the final step so the turn lands on prose instead of
@@ -146,6 +249,9 @@ Messages have a `parts` array that can contain multiple types:
   only tool whose unit is a conversation
 - `tool-getEmails` — a full-text fetch by id, rendered the same way. Output is
   `{ emails, missingIds }`; bodies here are **not** truncated
+- `tool-searchHistory` — a search of the chat's own Backlog, rendered the same
+  way. Output is an array of matched messages, each with its id, position, role
+  and text
 
 `MyMessage` is the project's `UIMessage` specialisation. It adds a custom
 `data-frontend-action` part carrying `"refresh-sidebar"`, written with
