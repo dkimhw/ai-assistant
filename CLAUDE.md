@@ -191,9 +191,13 @@ after an aborted turn. It is LRU-bounded so a long-lived process does not hold
 every chat ever opened, and it is honestly an *intra-turn* cache: a turn appends
 two messages, so the next request rebuilds regardless.
 
-A hit is the region of the message around the term that matched, not its
-opening — a pasted document is a `text` part like any other, and a hit whose text
-does not contain the word it was returned for reads as a failed search. The
+A hit is the region of the message carrying the most of what the query matched
+on, not its opening and not the first matched term — a pasted document is a
+`text` part like any other, and a hit whose text does not contain the word it was
+returned for reads as a failed search. Each occurrence of each matched term
+proposes a window; the one holding the most matched terms wins, weighted by
+`idf`, so it degrades to the rarest term's neighbourhood when the terms are too
+far apart to share a window. The
 message the search was made from is never a hit: the model writes the query out
 of it, so it ranks near the top and would spend a slot handing the question
 back.

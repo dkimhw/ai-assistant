@@ -272,6 +272,63 @@ describe("searchChatHistory", () => {
     expect(hits[0]?.text.startsWith("…")).toBe(true);
   });
 
+  it("anchors a snippet on the passage carrying the query, not the first term in it", () => {
+    // The bug this guards, which shipped once: a common query word near the top
+    // of a long paste and the answer far below it. Anchoring on the earliest
+    // match returns the heading and nothing else, and the model reads a hit with
+    // no completion date in it as the conversation not containing one.
+    const pasted = [
+      "Date: 3 March 2026. Minutes of the meeting.",
+      "lorem ipsum ".repeat(200),
+      "the completion date is 14 March",
+    ].join(" ");
+
+    const hits = searchChatHistory({
+      chatId: "snippets-anchor-on-the-densest-passage",
+      messages: [
+        user("the completion is what I need to pin down", "m0"),
+        user(pasted, "m1"),
+        asking(),
+      ],
+      query: "completion date",
+    });
+
+    const hit = hits.find((candidate) => candidate.messageId === "m1");
+
+    expect(hit?.text).toContain("completion date is 14 March");
+    expect(hit?.text).not.toContain("Minutes of the meeting");
+    expect(hit?.text.length).toBeLessThanOrEqual(
+      SEARCH_HISTORY_TEXT_CHARACTERS
+    );
+  });
+
+  it("falls back to the rarest term when the matched terms are far apart", () => {
+    // No window holds both, so the anchor is decided by weight: "guttering"
+    // appears in one message, "March" in several, and the passage worth showing
+    // is the rare one.
+    const pasted = [
+      "March. March. March.",
+      "lorem ipsum ".repeat(200),
+      "the guttering was replaced in the end",
+      "lorem ipsum ".repeat(200),
+    ].join(" ");
+
+    const hits = searchChatHistory({
+      chatId: "snippets-prefer-the-rarest-term",
+      messages: [
+        user("March is fine", "m0"),
+        user("March again", "m1"),
+        user(pasted, "m2"),
+        asking(),
+      ],
+      query: "guttering March",
+    });
+
+    const hit = hits.find((candidate) => candidate.messageId === "m2");
+
+    expect(hit?.text).toContain("guttering was replaced");
+  });
+
   it("rebuilds when the chat is the same length but not the same conversation", () => {
     // A chat id does not identify a client. Two tabs on one chat, or a resend
     // after an aborted turn, arrive at the same length with different messages.
@@ -440,9 +497,7 @@ describe("searchChatHistory — the shape of a hit", () => {
       chatId: "shape-out-of-window",
       messages: [
         user("the guttering needs replacing", "m0"),
-        ...Array.from({ length: 10 }, (_, i) =>
-          user(`filler ${i}`, `f${i}`)
-        ),
+        ...Array.from({ length: 10 }, (_, i) => user(`filler ${i}`, `f${i}`)),
         asking(),
       ],
       query: "guttering",

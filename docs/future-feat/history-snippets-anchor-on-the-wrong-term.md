@@ -1,7 +1,9 @@
 # History snippets anchor on the wrong term
 
-Status: bug, reproduced, not fixed. Found by review of `e2443ec` (Phase 4 of
-`plans/window-and-backlog.md`); the `searchHistory` tool it affects has shipped.
+Status: **fixed** on `fix/history-snippet-anchor`, by the second option below.
+Kept as the record of why the anchor is what it is. Found by review of `e2443ec`
+(Phase 4 of `plans/window-and-backlog.md`); the `searchHistory` tool it affects
+had already shipped.
 
 ## Problem statement
 
@@ -71,7 +73,7 @@ answer appears late — the shape above.
 
 ## Options
 
-Neither has been chosen.
+The second was taken.
 
 **Anchor on the rarest matched term.** `BM25Index` already carries `df`, and
 `searchChatHistory` holds the index when it builds the hit, so the lowest-`df`
@@ -86,8 +88,24 @@ and it degrades to the rarest-term answer when the terms are far apart. Costs a
 pass over the match positions and more code in a function that is currently ten
 readable lines.
 
-The first is probably right for now — this is one function with one call site,
-and the second can replace it later without changing anything around it.
+The first was the cheaper guess and it is not sufficient: in the reproduction
+above both `completion` and `date` occur in one message and nowhere else, so
+their `df` is equal, the tie falls back to the earliest position, and the bug
+survives its own repro. A chat is a corpus of a few hundred short documents —
+ties at `df` 1 are the normal case, not the edge. So the density rule landed
+instead, with `idf` as the weight so it degrades to the rarest-term answer when
+no window can hold two terms.
+
+The implementation is in `snippet` in `src/lib/search/chat-history.ts`: each
+occurrence of each matched term proposes a window starting a lead-in before it,
+each window scores the `idf` of the distinct matched terms inside it, highest
+score wins and ties go to the earliest. `searchChatHistory` passes the `idf` in
+from the same `BM25Index` that decided the message matched, so there is no
+second notion of what a rare word is.
+
+Both shapes are now fixtures in `chat-history.test.ts` — a query term early with
+the answer late, and two terms too far apart to share a window — and both fail
+against the previous anchor.
 
 ## Not the same bug
 
