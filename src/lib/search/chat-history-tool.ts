@@ -40,8 +40,15 @@ export const SEARCH_HISTORY_TOOL_DESCRIPTION =
   "keyword, so use the words the user themselves would have used. Returns at " +
   `most ${SEARCH_HISTORY_RESULT_COUNT} messages, or an empty array when the ` +
   "conversation contains nothing matching — which is a real answer, not a " +
-  "failure. Restate anything you recover in your reply, because this result " +
-  "will not be in your context next turn.";
+  "failure. Each result carries the messages either side of it, so a reply like " +
+  "'yes, do that' arrives with the question it answered; `turn N of M` says how " +
+  "early in the conversation it was said, which matters when a later message " +
+  "may have revised it. `inWindow: true` means that message is already in the " +
+  "part of the conversation you can see — it is not something you have just " +
+  "discovered, so do not present it as one. ALWAYS restate what you recover in " +
+  "your own reply: this result is not part of the conversation and will be gone " +
+  "from your context next turn, so a fact you leave sitting in it has to be " +
+  "found all over again.";
 
 export const searchHistoryInputSchema = z.object({
   query: z

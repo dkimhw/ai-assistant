@@ -204,8 +204,26 @@ message list** — not `prepareWindow`'s output, which would leave the tool able
 search only what the model can already see. The unbound set built for validation
 passes no chat, and that copy answers every query with an empty array.
 
-Hit shape, the restatement rule and marking hits already inside the Window are
-Phase 4; see `plans/window-and-backlog.md`.
+A hit is not a bare message. It carries `before` and `after` — the messages
+either side of it, because a hit on "yes, do that" is worthless alone — plus
+`turn N of M` for how early it was said, and `inWindow`. Neighbours are absent
+at the ends of a chat, absent when the adjacent message is a tool call with no
+prose, and absent when it is the user's current turn; they are cut to a fifth of
+the hit's own budget, since a neighbour exists to identify a question rather
+than answer one.
+
+In-Window hits are marked *and* sorted behind the rest, not dropped. Marking
+stops the model presenting something the user can see as a discovery; the sort
+stops it spending the cap on messages already in context. Dropping was rejected
+because an empty result is a sentence the prompt acts on, and "the conversation
+does not contain that" is a lie when the answer is two messages up.
+
+Three prompt rules carry the rest, and they were all written against observed
+failures: restate the *substance* of what you recovered rather than the one word
+asked for (the model otherwise re-searches for the fact next to the answer);
+never offer to search when you can search; and look at what is already in front
+of you first. A tool result is not indexed and is stubbed on the next turn, so a
+recovered fact only survives in the assistant's own prose.
 
 Four things bound one turn, and they are separate concerns: `stopWhen` caps the
 step count, `abortSignal` ends a turn the client walked away from, `prepareStep`

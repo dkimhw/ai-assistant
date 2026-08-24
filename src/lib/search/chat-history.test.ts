@@ -1,6 +1,7 @@
 import type { MyMessage } from "@/app/api/chat/route";
 import {
   searchChatHistory,
+  SEARCH_HISTORY_NEIGHBOUR_CHARACTERS,
   SEARCH_HISTORY_TEXT_CHARACTERS,
 } from "@/lib/search/chat-history";
 import { describe, expect, it } from "vitest";
@@ -61,7 +62,7 @@ describe("searchChatHistory", () => {
     expect(hits).toEqual([]);
   });
 
-  it("carries the message's id, role and position in the chat", () => {
+  it("carries the message's id and role", () => {
     const hits = searchChatHistory({
       chatId: "carries-identity",
       messages: [
@@ -72,11 +73,7 @@ describe("searchChatHistory", () => {
       query: "plumber",
     });
 
-    expect(hits[0]).toMatchObject({
-      messageId: "m1",
-      position: 1,
-      role: "assistant",
-    });
+    expect(hits[0]).toMatchObject({ messageId: "m1", role: "assistant" });
   });
 
   it("indexes text parts only, never tool output", () => {
@@ -295,5 +292,183 @@ describe("searchChatHistory", () => {
         query: "guttering",
       })
     ).toEqual([]);
+  });
+});
+
+/**
+ * Phase 4: what a hit looks like once it arrives.
+ *
+ * A hit on "yes, do that" is worthless alone, and a hit the model can already
+ * see in the Window is not news. Both are about the shape of the result rather
+ * than about which message won, so they are grouped apart from the ranking
+ * tests above.
+ */
+describe("searchChatHistory — the shape of a hit", () => {
+  it("carries the messages either side of the one that matched", () => {
+    const hits = searchChatHistory({
+      chatId: "shape-neighbours",
+      messages: [
+        user("shall I book the surveyor for Thursday?", "m0"),
+        assistant("yes, do that", "m1"),
+        user("thanks", "m2"),
+        asking(),
+      ],
+      query: "yes do that",
+    });
+
+    expect(hits[0]?.messageId).toBe("m1");
+    expect(hits[0]?.before).toEqual({
+      role: "user",
+      text: "shall I book the surveyor for Thursday?",
+    });
+    expect(hits[0]?.after).toEqual({ role: "user", text: "thanks" });
+  });
+
+  it("has no neighbour before the first message of a chat", () => {
+    const hits = searchChatHistory({
+      chatId: "shape-start-of-chat",
+      messages: [
+        user("the guttering needs replacing", "m0"),
+        assistant("noted", "m1"),
+        asking(),
+      ],
+      query: "guttering",
+    });
+
+    expect(hits[0]?.before).toBeUndefined();
+    expect(hits[0]?.after).toEqual({ role: "assistant", text: "noted" });
+  });
+
+  it("does not offer the user's current question as a neighbour", () => {
+    // The message after the hit is the turn the search was made from. It is the
+    // question the model just read; repeating it back is not context.
+    const hits = searchChatHistory({
+      chatId: "shape-end-of-chat",
+      messages: [
+        assistant("noted", "m0"),
+        user("the guttering needs replacing", "m1"),
+        asking(),
+      ],
+      query: "guttering",
+    });
+
+    expect(hits[0]?.messageId).toBe("m1");
+    expect(hits[0]?.after).toBeUndefined();
+  });
+
+  it("skips a neighbour with no prose rather than offering an empty one", () => {
+    const hits = searchChatHistory({
+      chatId: "shape-toolonly-neighbour",
+      messages: [
+        {
+          id: "m0",
+          role: "assistant",
+          parts: [
+            {
+              type: "tool-triageEmails",
+              toolCallId: "call-1",
+              state: "output-available",
+              input: {},
+              output: { totalMatches: 0, threads: [] },
+            },
+          ],
+        },
+        user("the guttering needs replacing", "m1"),
+        assistant("noted", "m2"),
+        asking(),
+      ],
+      query: "guttering",
+    });
+
+    expect(hits[0]?.before).toBeUndefined();
+    expect(hits[0]?.after).toEqual({ role: "assistant", text: "noted" });
+  });
+
+  it("truncates a neighbour harder than the hit itself", () => {
+    const long = "x".repeat(SEARCH_HISTORY_TEXT_CHARACTERS * 2);
+
+    const hits = searchChatHistory({
+      chatId: "shape-long-neighbour",
+      messages: [
+        user(long, "m0"),
+        assistant("the guttering needs replacing", "m1"),
+        asking(),
+      ],
+      query: "guttering",
+    });
+
+    expect(hits[0]?.before?.text.length).toBeLessThanOrEqual(
+      SEARCH_HISTORY_NEIGHBOUR_CHARACTERS
+    );
+  });
+
+  it("says where in the chat the message was", () => {
+    const hits = searchChatHistory({
+      chatId: "shape-turn-position",
+      messages: [
+        user("hello", "m0"),
+        assistant("hi", "m1"),
+        user("the guttering needs replacing", "m2"),
+        assistant("noted", "m3"),
+        asking(),
+      ],
+      query: "guttering",
+    });
+
+    // One-based, because "turn 3 of 5" is what it is for.
+    expect(hits[0]?.turn).toBe(3);
+    expect(hits[0]?.ofTurns).toBe(5);
+  });
+
+  it("marks a hit the model can already see in the Window", () => {
+    const hits = searchChatHistory({
+      chatId: "shape-in-window",
+      messages: [
+        user("the guttering needs replacing", "m0"),
+        assistant("noted", "m1"),
+        asking(),
+      ],
+      query: "guttering",
+      windowSize: 20,
+    });
+
+    expect(hits[0]?.inWindow).toBe(true);
+  });
+
+  it("marks a hit that has fallen out of the Window as news", () => {
+    const hits = searchChatHistory({
+      chatId: "shape-out-of-window",
+      messages: [
+        user("the guttering needs replacing", "m0"),
+        ...Array.from({ length: 10 }, (_, i) =>
+          user(`filler ${i}`, `f${i}`)
+        ),
+        asking(),
+      ],
+      query: "guttering",
+      windowSize: 4,
+    });
+
+    expect(hits[0]?.inWindow).toBe(false);
+  });
+
+  it("spends the cap on the Backlog before the Window", () => {
+    // The cap is the whole budget, and a hit inside the Window buys nothing the
+    // model does not already have. Two messages say "guttering"; only one of
+    // them is news, and with one slot it must be that one.
+    const hits = searchChatHistory({
+      chatId: "shape-backlog-first",
+      messages: [
+        user("the guttering needs replacing", "m0"),
+        ...Array.from({ length: 10 }, (_, i) => user(`filler ${i}`, `f${i}`)),
+        user("the guttering, again", "recent"),
+        asking(),
+      ],
+      query: "guttering",
+      windowSize: 4,
+      limit: 1,
+    });
+
+    expect(hits.map((hit) => hit.messageId)).toEqual(["m0"]);
   });
 });

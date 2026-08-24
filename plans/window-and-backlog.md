@@ -162,9 +162,25 @@ Prose is indexed, stays in the Window, and survives.
 
 ### Acceptance criteria
 
-- [ ] Each hit includes its immediate neighbours and its turn position
-- [ ] A hit that falls inside the current Window is marked or omitted
-- [ ] Neighbour expansion is bounded at the start and end of a chat
-- [ ] The system prompt instructs the model to restate what it recovers
-- [ ] Observed: after recovering a fact, the reply contains it in prose, and a
+- [x] Each hit includes its immediate neighbours and its turn position
+- [x] A hit that falls inside the current Window is marked or omitted
+- [x] Neighbour expansion is bounded at the start and end of a chat
+- [x] The system prompt instructs the model to restate what it recovers
+- [x] Observed: after recovering a fact, the reply contains it in prose, and a
       follow-up question in the next turn is answered without searching again
+
+Marked rather than omitted, *and* sorted behind the hits outside the Window.
+Marking is what stops the model announcing a discovery it did not make; the
+sort is what stops those hits eating a cap of five. Omitting them outright was
+rejected: an empty result is a sentence the prompt acts on ("the conversation
+does not contain that"), and it would be a lie when the answer was two messages
+up — a chat shorter than the Window would never return anything at all.
+
+The observation took two prompt rules the plan did not anticipate. With the
+restatement rule alone, the model restated only the one word that answered the
+question, then on the follow-up *offered* to search rather than searching. So
+the rules now say to restate the substance rather than the answer, never to
+offer a search it can just perform, and to look at what is in front of it
+before searching at all. Observed after that: turn one recovers the school, the
+teacher and the date and restates all three; turn two answers "and who is her
+teacher?" with no tool call.

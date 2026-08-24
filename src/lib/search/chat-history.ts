@@ -1,5 +1,6 @@
 import type { MyMessage } from "@/app/api/chat/route";
 import { buildBM25Index, searchBM25, type BM25Index } from "@/lib/search/bm25";
+import { WINDOW_MESSAGE_COUNT } from "@/lib/chat-window";
 
 /**
  * The Backlog, made searchable: a BM25 index over one chat's own messages.
@@ -49,6 +50,16 @@ export const SEARCH_HISTORY_TEXT_CHARACTERS = 600;
 const SNIPPET_LEAD_IN_CHARACTERS = 100;
 
 /**
+ * Per-neighbour character budget, deliberately a fraction of the hit's own.
+ *
+ * A neighbour is not a result — it is there to make one intelligible. "Yes, do
+ * that" needs the question above it, and the question's opening is enough to
+ * supply that. Five hits each carrying two full-length neighbours would triple
+ * the tool's payload to answer a question nobody asked.
+ */
+export const SEARCH_HISTORY_NEIGHBOUR_CHARACTERS = 200;
+
+/**
  * How many chats keep an index in memory. Each one is small (a few hundred short
  * documents at most), but a server process serves every chat the user opens and
  * an unbounded map would hold every one of them for the process lifetime.
@@ -59,14 +70,46 @@ const SNIPPET_LEAD_IN_CHARACTERS = 100;
 const HISTORY_INDEX_CACHE_LIMIT = 20;
 
 /**
+ * A message next to the one that matched. Role and prose, nothing else: it is
+ * context for reading the hit, not a result in its own right, and giving it an
+ * id would invite the model to cite it as though it had been retrieved.
+ */
+export type ChatHistoryNeighbour = {
+  role: MyMessage["role"];
+  text: string;
+};
+
+/**
  * One matched message, as the model reads it.
  *
- * `messageId` is the chat's own id for the message, so a later phase — or a UI —
- * can locate it in the transcript. `position` is its index in the full chat,
- * which is what "you said this near the start" is built from in Phase 4; it is
- * kept on the hit now because the index is the only thing that knows it.
+ * `messageId` is the chat's own id, so a UI could locate the message in the
+ * transcript. Everything else on here exists because a bare matched message is
+ * not usable on its own:
+ *
+ * - `before` and `after` are the messages either side of it. A hit on "yes, do
+ *   that" says nothing; the question above it is the whole content. Absent at
+ *   the ends of a chat, and absent when the adjacent message is a tool call with
+ *   no prose in it.
+ * - `turn` and `ofTurns` place it: "turn 3 of 47" tells the model this was said
+ *   near the start, which is how it weighs a fact that may since have been
+ *   revised. One-based, because that is how the sentence reads.
+ * - `inWindow` says whether the model can already see this message. A hit inside
+ *   the Window is not news, and one presented as though it were invites the
+ *   model to announce a discovery the user can see it did not have to make.
  */
 export type ChatHistoryHit = {
+  messageId: string;
+  turn: number;
+  ofTurns: number;
+  role: MyMessage["role"];
+  text: string;
+  inWindow: boolean;
+  before?: ChatHistoryNeighbour;
+  after?: ChatHistoryNeighbour;
+};
+
+/** What the index holds per message: identity and full prose, no presentation. */
+type IndexedMessage = {
   messageId: string;
   position: number;
   role: MyMessage["role"];
@@ -76,7 +119,14 @@ export type ChatHistoryHit = {
 type IndexedMessages = {
   index: BM25Index;
   /** Keyed by the document id, which is the message's position as a string. */
-  hits: Map<string, ChatHistoryHit>;
+  hits: Map<string, IndexedMessage>;
+  /**
+   * Every message's prose by position, including the ones that are not
+   * documents. A tool-only assistant message is not searchable, but it is still
+   * somebody's neighbour, and the positions have to line up with the chat rather
+   * than with the index for that to work.
+   */
+  prose: ChatHistoryNeighbour[];
 };
 
 /**
@@ -140,7 +190,7 @@ const textOf = (message: MyMessage): string =>
 export const buildChatHistoryIndex = (opts: {
   messages: MyMessage[];
 }): IndexedMessages => {
-  const hits = new Map<string, ChatHistoryHit>();
+  const hits = new Map<string, IndexedMessage>();
 
   const documents = opts.messages.flatMap((message, position) => {
     const text = textOf(message);
@@ -152,7 +202,12 @@ export const buildChatHistoryIndex = (opts: {
     return [{ id, fields: { text } }];
   });
 
-  return { index: buildBM25Index({ documents }), hits };
+  const prose = opts.messages.map((message) => ({
+    role: message.role,
+    text: textOf(message),
+  }));
+
+  return { index: buildBM25Index({ documents }), hits, prose };
 };
 
 /**
@@ -213,6 +268,36 @@ const indexFor = (opts: {
   return indexed;
 };
 
+/** A neighbour, cut short. Long enough to identify a question, not to answer one. */
+const neighbourText = (text: string) =>
+  text.length <= SEARCH_HISTORY_NEIGHBOUR_CHARACTERS
+    ? text
+    : `${text.slice(0, SEARCH_HISTORY_NEIGHBOUR_CHARACTERS - 1).trimEnd()}…`;
+
+/**
+ * The message at `at`, if it is one worth showing beside a hit.
+ *
+ * Three ways there is nothing to show, and they are all ordinary: the hit is at
+ * the start or end of the chat, the adjacent message is the user's current turn
+ * — the question the model has just read, which is not context for anything —
+ * or the adjacent message is a tool call with no prose in it. An empty
+ * neighbour is worse than an absent one, because the model reads it as the
+ * conversation having said nothing there.
+ */
+const neighbourAt = (opts: {
+  prose: ChatHistoryNeighbour[];
+  at: number;
+  askedFrom: number;
+}): ChatHistoryNeighbour | undefined => {
+  const { prose, at } = opts;
+  if (at < 0 || at >= prose.length || at === opts.askedFrom) return undefined;
+
+  const message = prose[at];
+  if (!message || message.text.length === 0) return undefined;
+
+  return { role: message.role, text: neighbourText(message.text) };
+};
+
 /**
  * The chat's own messages, ranked against a query, best first.
  *
@@ -223,10 +308,14 @@ const indexFor = (opts: {
  * the tool exists to reach. It is excluded after ranking rather than before it,
  * so it still contributes to the corpus statistics it is genuinely part of.
  *
- * Hits that fall inside the Window but earlier than that are still returned.
- * They are not free — they cost a slot for something the model can already see —
- * but knowing which of them are in the Window means knowing the Window, and
- * that belongs with the rest of Phase 4's hit shape.
+ * Hits inside the Window are marked *and* sorted behind the ones outside it.
+ * Marking alone is what the model needs to avoid announcing a discovery it did
+ * not make; sorting is what stops those hits eating the cap. The cap is the
+ * whole budget — five of anything — and a message the model can already read
+ * costs a slot to tell it something it knows. They are kept rather than dropped
+ * because an empty result is a sentence the prompt will act on: "the
+ * conversation does not contain that" is a lie when the answer was two messages
+ * up, and a chat shorter than the Window would otherwise never return anything.
  *
  * Returns an empty array rather than throwing when nothing matches — a query
  * whose every term is absent from the conversation is an ordinary answer here,
@@ -237,21 +326,47 @@ export const searchChatHistory = (opts: {
   messages: MyMessage[];
   query: string;
   limit?: number;
+  windowSize?: number;
 }): ChatHistoryHit[] => {
-  const { index, hits } = indexFor(opts);
+  const { index, hits, prose } = indexFor(opts);
   const limit = opts.limit ?? SEARCH_HISTORY_RESULT_COUNT;
-  const askedFrom = opts.messages.length - 1;
+  const windowSize = opts.windowSize ?? WINDOW_MESSAGE_COUNT;
 
-  return searchBM25({
+  const ofTurns = opts.messages.length;
+  const askedFrom = ofTurns - 1;
+  // The same cut `windowMessages` makes, arrived at the same way, so "in the
+  // Window" here means what it means to the route.
+  const windowStart = Math.max(0, ofTurns - windowSize);
+
+  const ranked = searchBM25({
     index,
     query: opts.query,
-    // One spare, so dropping the current turn cannot silently shorten the
-    // results below the cap the caller asked for.
-    limit: limit + 1,
-  }).flatMap((result) => {
+    // Enough candidates that the reordering below has something to reorder: in
+    // the worst case every message the model can already see outranks the one
+    // it cannot, and the current turn takes one more.
+    limit: limit + windowSize + 1,
+  }).flatMap((result): ChatHistoryHit[] => {
     const hit = hits.get(result.id);
     if (!hit || hit.position === askedFrom) return [];
 
-    return [{ ...hit, text: snippet({ text: hit.text, terms: result.matchedTerms }) }];
-  }).slice(0, limit);
+    return [
+      {
+        messageId: hit.messageId,
+        turn: hit.position + 1,
+        ofTurns,
+        role: hit.role,
+        text: snippet({ text: hit.text, terms: result.matchedTerms }),
+        inWindow: hit.position >= windowStart,
+        before: neighbourAt({ prose, at: hit.position - 1, askedFrom }),
+        after: neighbourAt({ prose, at: hit.position + 1, askedFrom }),
+      },
+    ];
+  });
+
+  // Stable within each group, so relevance still decides the order among the
+  // hits that are news and among the hits that are not.
+  return [
+    ...ranked.filter((hit) => !hit.inWindow),
+    ...ranked.filter((hit) => hit.inWindow),
+  ].slice(0, limit);
 };

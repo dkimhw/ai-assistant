@@ -3,7 +3,7 @@
 A description of what the test suite currently is, what each test buys us, and
 which tests are load-bearing enough to be worth your review time.
 
-Status as of this document: **271 tests, 16 files, all passing, ~1.3s.**
+Status as of this document: **280 tests, 16 files, all passing, ~1.3s.**
 Most tests live in `src/lib/search/`; the three exceptions are described below
 and are deliberate ones.
 
@@ -22,7 +22,7 @@ src/lib/search/email-get-tool.test.ts    21 tests
 src/app/api/chat/tools.test.ts           14 tests
 src/lib/memory.test.ts                    8 tests
 src/lib/chat-window.test.ts              21 tests
-src/lib/search/chat-history.test.ts      13 tests
+src/lib/search/chat-history.test.ts      22 tests
 src/lib/search/chat-history-tool.test.ts  6 tests
 ```
 
@@ -234,6 +234,16 @@ serves one tab's conversation to another).
 The rest are ordinary: ranking the message that uses the terms most above one
 that mentions them once, a truncated paste, the cap surviving the exclusion of
 the current turn, and the empty result for a query whose words nobody typed.
+
+A second `describe` covers the shape of a hit rather than which message won it.
+Most of those are the edges neighbour expansion has to survive — the first
+message of a chat, an adjacent tool-only message with no prose, the user's
+current turn sitting next to a hit — and they are cheap. The one worth reading is
+**"spends the cap on the Backlog before the Window"**: two messages match, only
+one is news, and with a cap of one it has to be that one. It is the test that
+would notice if the in-Window sort were ever "simplified" back into plain
+relevance order, which would silently return the model things it can already
+see.
 
 ### The filter and fetch tools
 

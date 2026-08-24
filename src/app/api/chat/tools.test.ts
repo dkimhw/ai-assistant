@@ -123,9 +123,12 @@ const persistedSearchHistoryPart = {
   output: [
     {
       messageId: "m0",
-      position: 0,
+      turn: 1,
+      ofTurns: 42,
       role: "user",
       text: "the school run starts at half eight on Tuesdays",
+      inWindow: false,
+      after: { role: "assistant", text: "noted" },
     },
   ],
 };
