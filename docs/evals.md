@@ -83,6 +83,10 @@ whether it recovers from an empty one, whether it restates what it recovered.
 Those are a different eval, and the two-attempt search budget in particular has
 no coverage at all.
 
+That second eval is specified — end to end, real tools, real corpus, scored on
+retrieval, answer and conduct separately — in
+[`docs/retrieval-eval-spec.md`](./retrieval-eval-spec.md). It is not built yet.
+
 ## Why `system-prompt.ts` exists
 
 `buildSystemPrompt` was inline in `route.ts` until this suite needed it. The
