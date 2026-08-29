@@ -3,6 +3,9 @@
 A description of what the test suite currently is, what each test buys us, and
 which tests are load-bearing enough to be worth your review time.
 
+Evals are a separate thing and live in [`evals.md`](evals.md): a test asks
+whether the code does what it says, an eval asks whether the model does.
+
 Status as of this document: **280 tests, 16 files, all passing, ~1.3s.**
 Most tests live in `src/lib/search/`; the three exceptions are described below
 and are deliberate ones.
@@ -394,7 +397,7 @@ does not exist.
 | **Tautological test** | The failure mode an oracle avoids: the assertion recomputes the expected value the same way the code does, so it passes by construction and can never disagree with the implementation. |
 | **Property test** | Asserts a relationship that must hold (`rare > common`) rather than an exact number. Survives parameter tuning; won't catch a uniformly-scaled error. |
 | **Smoke test** | Confirms the pipeline runs end-to-end on real input without asserting quality. `emails.test.ts` is this. |
-| **Eval** | Not a unit test. A scored benchmark measuring *quality* (relevance) over a labelled query set, where the answer is a number that can go up or down rather than pass/fail. `evalite` is installed and configured for exactly this and currently has zero suites. |
+| **Eval** | Not a unit test. A scored benchmark measuring *quality* over a labelled case set, where the answer is a number that can go up or down rather than pass/fail. There is one suite, `tool-choice.eval.ts` — see [`evals.md`](evals.md). It scores tool choice, not relevance; the relevance evals the tuning comments defer to are still unwritten. |
 
 ---
 
@@ -635,14 +638,15 @@ rather than on anything explicit in the code.
 
 Listed as findings, not recommendations — the scoping calls are yours.
 
-1. **No evals exist.** `evalite` is a dependency, `evalite.config.ts` is wired to
-   the vitest config, and there are zero `*.eval.ts` files. `emails.ts` ("a
-   starting guess to tune against evals"), `docs/bm25-search.md`, and now `k = 60`
-   in `rrf.ts` all defer the *actual quality questions* — field weights, no
-   stemming, `k1`/`b`, and the fusion constant — to a harness that does not
-   exist. The unit tests prove the maths is BM25 and RRF; nothing measures
-   whether the results are good. This is the largest gap by some distance, and
-   RRF has just made it larger by adding a knob.
+1. **No *relevance* evals exist.** The harness is no longer the gap — there is
+   one suite, and it scores tool choice (see [`evals.md`](evals.md)). What is
+   still unmeasured is everything the tuning comments defer: `emails.ts` ("a
+   starting guess to tune against evals"), `docs/bm25-search.md`, and `k = 60` in
+   `rrf.ts` all point at field weights, stemming, `k1`/`b` and the fusion
+   constant, and none of those has a labelled query set behind it. The unit tests
+   prove the maths is BM25 and RRF; nothing measures whether the results are
+   good. This remains the largest gap, and it is now a dataset problem rather
+   than a harness one.
 
 2. **`fuseRRF` has no callers and no integration test.** Every test feeds it
    hand-written `string[][]`. Nothing yet checks that `searchBM25` output

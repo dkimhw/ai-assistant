@@ -9,6 +9,8 @@
     "build:vectors": "tsx --env-file-if-exists=.env scripts/build-email-vectors.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "eval": "evalite watch",
+    "eval:run": "evalite run",
     "test:watch": "vitest",
     "cherry-pick": "ai-hero-cli cherry-pick --branch=live-run-through",
     "reset": "ai-hero-cli reset --branch=live-run-through",

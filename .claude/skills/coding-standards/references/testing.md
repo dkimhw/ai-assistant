@@ -98,9 +98,12 @@ fail on unrelated data changes and tells you nothing about ranking quality.
 ## Unit tests do not measure relevance
 
 Vitest answers "is the maths what we intended?". Whether results are actually
-*good* — field weights, stemming, `k1`/`b` — is an eval question. `evalite` is
-installed and wired to the vitest config for this. Do not encode a relevance
-judgement as a pass/fail assertion; it belongs in a scored eval suite.
+*good* — field weights, stemming, `k1`/`b` — is an eval question, and so is
+anything decided by the model rather than by the code. `evalite` is wired to the
+vitest config for this; `*.eval.ts` files sit beside the code they measure and
+are described in [`docs/evals.md`](../../../../docs/evals.md). Do not encode a
+relevance judgement, or a "did the model pick the right tool" judgement, as a
+pass/fail assertion; both belong in a scored eval suite.
 
 ## Coverage expectation
 

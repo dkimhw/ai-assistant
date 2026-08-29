@@ -9,6 +9,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Build**: `pnpm run build` (uses Turbopack)
 - **Start production**: `pnpm start`
 - **Test**: `pnpm run test` (vitest, single run) / `pnpm run test:watch`
+- **Evals**: `pnpm run eval` (evalite, watch + UI on :3006) / `pnpm run eval:run`
+  (once, exits non-zero on failure). Needs an OpenAI key — evals call the real
+  model
 - **Typecheck**: `pnpm run typecheck` (`tsc --noEmit`)
 - **Build email vectors**: `pnpm run build:vectors` (tsx script, reads `.env` if present)
 
@@ -43,8 +46,8 @@ memory store, and a BM25F lexical search over an email corpus.
 - **Search**: hand-rolled BM25F over `data/emails.json`, fused with a semantic
   ranking by RRF, then reranked by an LLM for the chat tool only; no search
   dependency
-- **Testing**: vitest; `evalite` is installed and configured for relevance evals
-  but has no suites yet
+- **Testing**: vitest for units; `evalite` for scored evals. One eval suite so
+  far — tool-choice accuracy, not relevance
 - **Markdown**: `streamdown` for rendering
 - **UI**: shadcn/Radix components + Tailwind CSS 4, dark mode via `next-themes`
 
@@ -55,6 +58,10 @@ memory store, and a BM25F lexical search over an email corpus.
 - `src/app/api/chat/route.ts` — streaming chat endpoint; also exports `MyMessage`
 - `src/app/api/chat/generate-title.ts` — one-shot `generateText` title generation
 - `src/app/api/chat/model.ts` — the model ids and the OpenAI key convention
+- `src/app/api/chat/system-prompt.ts` — `buildSystemPrompt`, the prompt and every
+  tool-choice rule in it, kept out of `route.ts` so the eval can reach it
+- `src/app/api/chat/tool-choice.eval.ts` — the tool-choice eval: which tool the
+  model reaches for, and with what arguments
 - `src/app/api/chat/tools.ts` — `createChatTools`, the tool set the chat loop is
   given, plus the `chatTools` instance validation is built from
 - `src/app/actions/memories.ts` — server actions for memory CRUD
@@ -79,8 +86,8 @@ memory store, and a BM25F lexical search over an email corpus.
 - `CONTEXT.md` — the project glossary; `docs/adr/` — architectural decisions
 - `docs/` — `bm25-search.md`, `hybrid-search.md` and `memories-in-chat.md`
   (design), `chunking.md` (chunking strategies and the one we chose),
-  `testing.md` (test suite), `bm25-explained.html`,
-  `hybrid-search-explained.html`
+  `testing.md` (test suite), `evals.md` (the eval suite and what it measures),
+  `bm25-explained.html`, `hybrid-search-explained.html`
 
 Components used by exactly one route live in that route's folder; only shared
 ones live in `src/components/`.
