@@ -44,8 +44,8 @@ export const SEARCH_HISTORY_RESULT_COUNT = 5;
 export const SEARCH_HISTORY_TEXT_CHARACTERS = 600;
 
 /**
- * How much of a long message to keep before the term that matched, so a snippet
- * arrives with its lead-in rather than starting mid-sentence.
+ * How much of a long message to keep before the anchor, so a snippet arrives
+ * with its lead-in rather than starting mid-sentence.
  */
 const SNIPPET_LEAD_IN_CHARACTERS = 100;
 
@@ -130,8 +130,45 @@ type IndexedMessages = {
 };
 
 /**
- * The part of a message worth showing: the region around the first term that
- * matched, not the message's opening.
+ * Every position at which `term` occurs in an already-lowercased haystack,
+ * ascending. Overlapping occurrences are not a concern — query terms are
+ * whole words out of the tokenizer, not patterns.
+ */
+const occurrencesOf = (haystack: string, term: string): number[] => {
+  const positions: number[] = [];
+  for (
+    let at = haystack.indexOf(term);
+    at >= 0;
+    at = haystack.indexOf(term, at + term.length)
+  ) {
+    positions.push(at);
+  }
+  return positions;
+};
+
+/** Does an ascending `positions` list contain anything in `[start, end)`? */
+const occursWithin = (opts: {
+  positions: number[];
+  start: number;
+  end: number;
+}): boolean => {
+  const { positions, start, end } = opts;
+  let low = 0;
+  let high = positions.length;
+
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (positions[mid] < start) low = mid + 1;
+    else high = mid;
+  }
+
+  return low < positions.length && positions[low] < end;
+};
+
+/**
+ * The part of a message worth showing: the region of it carrying the most of
+ * what the query matched on, not the message's opening and not the first term
+ * that happened to appear.
  *
  * The distinction only matters for long messages, and for those it is the whole
  * point. A pasted 5,000-character document is a `text` part like any other, and
@@ -141,28 +178,76 @@ type IndexedMessages = {
  * is worse than returning nothing: the model either restates the wrong passage
  * or reads the search as failed.
  *
+ * Anchoring on the *first* matched term has the same failure one step in, and
+ * shipped once: minutes headed "Date: 3 March 2026" whose completion date sits
+ * 1,500 characters down answer "completion date" with the heading. So the
+ * anchor is the densest window instead — each occurrence of each matched term
+ * proposes a window, and the one holding the most matched terms wins, each term
+ * weighted by its `idf` so a rare word outvotes a common one rather than being
+ * outnumbered by it. With one term, or with terms too far apart to share a
+ * window, it degrades to the rarest term's neighbourhood, which is the best
+ * single point available. Ties go to the earliest window, so the output is
+ * deterministic.
+ *
+ * `idf` comes from the same index that decided the message matched at all; the
+ * function is passed in rather than the index so this stays a string operation.
+ *
  * Ellipses mark both ends, the same mark `searchEmails` uses and with the same
  * meaning — there is more of this message than you are looking at.
  */
-const snippet = (opts: { text: string; terms: string[] }): string => {
+const snippet = (opts: {
+  text: string;
+  terms: string[];
+  idf: (term: string) => number;
+}): string => {
   const { text } = opts;
   if (text.length <= SEARCH_HISTORY_TEXT_CHARACTERS) return text;
 
   const haystack = text.toLowerCase();
-  const positions = opts.terms
-    .map((term) => haystack.indexOf(term))
-    .filter((at) => at >= 0);
+  const matches = opts.terms
+    .map((term) => ({
+      weight: opts.idf(term),
+      positions: occurrencesOf(haystack, term),
+    }))
+    // No position at all when the match was on a token the tokenizer produced
+    // and the raw text does not contain literally — an email address split into
+    // its component words, say.
+    .filter((match) => match.positions.length > 0);
 
-  // No position at all when the match was on a token the tokenizer produced and
-  // the raw text does not contain literally — an email address split into its
-  // component words, say. The opening is the right fallback there.
-  const at = positions.length > 0 ? Math.min(...positions) : 0;
+  // Both ellipses, budgeted before anything is sliced so a snippet can never
+  // exceed the bound. Scoring uses the same width the slice will have, give or
+  // take the leading mark on a window that starts at 0.
+  const room = SEARCH_HISTORY_TEXT_CHARACTERS - 2;
 
-  const start = Math.max(0, at - SNIPPET_LEAD_IN_CHARACTERS);
+  const scoreFrom = (start: number) =>
+    matches.reduce(
+      (total, match) =>
+        occursWithin({ positions: match.positions, start, end: start + room })
+          ? total + match.weight
+          : total,
+      0
+    );
+
+  // The opening is the right fallback when nothing was found literally.
+  let start = 0;
+  let best = -1;
+
+  for (const match of matches) {
+    for (const position of match.positions) {
+      const candidate = Math.max(0, position - SNIPPET_LEAD_IN_CHARACTERS);
+      const score = scoreFrom(candidate);
+      if (score > best || (score === best && candidate < start)) {
+        best = score;
+        start = candidate;
+      }
+    }
+  }
+
   const leading = start > 0 ? "…" : "";
-  // Budget both marks before slicing, so a snippet can never exceed the bound.
-  const room = SEARCH_HISTORY_TEXT_CHARACTERS - leading.length - 1;
-  const end = Math.min(text.length, start + room);
+  const end = Math.min(
+    text.length,
+    start + SEARCH_HISTORY_TEXT_CHARACTERS - leading.length - 1
+  );
   const trailing = end < text.length ? "…" : "";
 
   return `${leading}${text.slice(start, end).trim()}${trailing}`;
@@ -332,6 +417,14 @@ export const searchChatHistory = (opts: {
   const limit = opts.limit ?? SEARCH_HISTORY_RESULT_COUNT;
   const windowSize = opts.windowSize ?? WINDOW_MESSAGE_COUNT;
 
+  // The same weighting BM25 scored with, handed to `snippet` so the passage it
+  // cuts is anchored on the terms that earned the match rather than on whichever
+  // one appears first.
+  const idf = (term: string) => {
+    const df = index.df.get(term) ?? 0;
+    return Math.log(1 + (index.docCount - df + 0.5) / (df + 0.5));
+  };
+
   const ofTurns = opts.messages.length;
   const askedFrom = ofTurns - 1;
   // The same cut `windowMessages` makes, arrived at the same way, so "in the
@@ -355,7 +448,7 @@ export const searchChatHistory = (opts: {
         turn: hit.position + 1,
         ofTurns,
         role: hit.role,
-        text: snippet({ text: hit.text, terms: result.matchedTerms }),
+        text: snippet({ text: hit.text, terms: result.matchedTerms, idf }),
         inWindow: hit.position >= windowStart,
         before: neighbourAt({ prose, at: hit.position - 1, askedFrom }),
         after: neighbourAt({ prose, at: hit.position + 1, askedFrom }),
